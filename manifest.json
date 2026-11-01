@@ -1,0 +1,132 @@
+{
+  "id": "app.eljohnzc.lossless",
+  "name": "Qobuz Hi-Res",
+  "version": "4.0.0",
+  "versionCode": 5,
+  "apiVersion": 1,
+  "author": "Qobuz [Heisenbergg] — port Myspoti",
+  "description": "Streaming e download FLAC dal catalogo Qobuz usando il pool di token condivisi (come l'estensione Echo omonima), più l'addon BitChord per Internet Archive. I brani di Spotify sono abbinati per titolo, artista, album, durata e ISRC; se un token muore l'estensione passa al successivo, e se nessuno serve audio il brano resta su Spotify. Si possono aggiungere token personali e un indirizzo da cui leggere il pool.",
+  "category": "tools",
+  "tags": [
+    "qobuz",
+    "lossless",
+    "flac",
+    "hi-res",
+    "24-bit",
+    "token pool"
+  ],
+  "media": {
+    "hosts": [
+      "*.akamaized.net",
+      "*.qobuz.com",
+      "archive.org",
+      "*.archive.org"
+    ]
+  },
+  "actions": [
+    {
+      "name": "audio.source",
+      "why": "Riproduce in FLAC (16 e 24-bit) i brani del catalogo Qobuz"
+    },
+    {
+      "name": "download.source",
+      "why": "Scarica in FLAC i brani abbinati, con la dimensione per la barra"
+    },
+    {
+      "name": "network",
+      "hosts": [
+        "www.qobuz.com",
+        "*.qobuz.com",
+        "soundfean-music.vercel.app",
+        "*.vercel.app",
+        "archive.org",
+        "*.archive.org"
+      ],
+      "why": "Cerca su Qobuz e sull'addon BitChord, e risolve l'indirizzo del file"
+    },
+    {
+      "name": "settings.page",
+      "why": "Token personali, pool, hi-res, streaming e tolleranza"
+    },
+    {
+      "name": "storage",
+      "why": "Ricorda abbinamenti, token buoni e token morti"
+    },
+    {
+      "name": "notify",
+      "why": "Conferma quando cache e token vengono dimenticati"
+    }
+  ],
+  "settings": [
+    {
+      "key": "userToken",
+      "type": "text",
+      "label": "Token Qobuz personale (uno o più)",
+      "description": "Facoltativo: il tuo user_auth_token di Qobuz. Più token separati da virgola formano un pool personale, provato prima di quello condiviso.",
+      "default": ""
+    },
+    {
+      "key": "poolUrl",
+      "type": "text",
+      "label": "Indirizzo del pool di token (avanzato)",
+      "description": "Vuoto: si usa il pool condiviso scritto nell'estensione. Se indichi un indirizzo che restituisce una lista JSON di {token, app_id, app_secret}, l'estensione legge i token da lì ogni 6 ore.",
+      "default": ""
+    },
+    {
+      "key": "qobuzEnabled",
+      "type": "toggle",
+      "label": "Usa Qobuz (pool di token)",
+      "description": "Spento: resta solo l'addon BitChord per Internet Archive. Utile se i token condivisi sono tutti esauriti e non hai un token tuo.",
+      "default": true
+    },
+    {
+      "key": "streamEnabled",
+      "type": "toggle",
+      "label": "Usa l'estensione anche in streaming",
+      "description": "Se lo spegni, l'estensione serve solo per i download e la riproduzione resta su Spotify.",
+      "default": true
+    },
+    {
+      "key": "preferHiRes",
+      "type": "toggle",
+      "label": "Preferisci l'hi-res",
+      "description": "Prova prima la versione 24-bit; se non è disponibile ripiega da solo sul lossless 16-bit.",
+      "default": true
+    },
+    {
+      "key": "tolerance",
+      "type": "choice",
+      "label": "Tolleranza sulla durata",
+      "description": "Quanto può differire la durata del file rispetto al brano di Spotify perché l'abbinamento sia accettato.",
+      "options": [
+        "Normale (±6 s)",
+        "Rigorosa (±3 s)",
+        "Permissiva (±15 s)"
+      ],
+      "default": "Normale (±6 s)"
+    },
+    {
+      "key": "clearCache",
+      "type": "button",
+      "label": "Svuota cache e token",
+      "description": "Dimentica brani abbinati, token rifiutati e pool letto da un indirizzo."
+    },
+    {
+      "key": "qobuzApi",
+      "type": "text",
+      "label": "API Qobuz (avanzato)",
+      "description": "Vuoto: https://www.qobuz.com/api.json/0.2/. Serve solo per uno specchio o per le prove in locale.",
+      "default": ""
+    }
+  ],
+  "minAppVersion": "2.0.0",
+  "changelog": "4.0.0 — il catalogo Qobuz arriva dall'API ufficiale con un pool di token condivisi (stesso meccanismo dell'estensione Echo echo-qobuz-extension 1.0.1): ricerca su Qobuz, abbinamento con ISRC, getFileUrl firmato in MD5 per il FLAC 16/24-bit, rotazione automatica dei token e token rifiutati ricordati. L'addon BitChord resta come seconda fonte per Internet Archive. Nuovi campi per token personali e per un pool da un indirizzo. I token condivisi possono esaurirsi: in quel caso si resta su Spotify.",
+  "welcome": {
+    "message": "Questa versione suona il catalogo Qobuz (FLAC 16 e 24-bit) con un pool di token condivisi, e in più l'addon BitChord per Internet Archive. Se i token condivisi smettono di funzionare, aggiungi il tuo user_auth_token nelle impostazioni: l'estensione prova prima i tuoi.",
+    "steps": [
+      "In Impostazioni ▸ Estensioni ▸ Qobuz Hi-Res scegli se usarlo in streaming.",
+      "Se i brani restano su Spotify, incolla un token Qobuz personale nel primo campo.",
+      "I brani che l'estensione sa servire arrivano in FLAC; gli altri restano su Spotify."
+    ]
+  }
+}
