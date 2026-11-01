@@ -120,7 +120,7 @@
     }
   ],
   "minAppVersion": "2.0.0",
-  "changelog": "4.0.0 — il catalogo Qobuz arriva dall'API ufficiale con un pool di token condivisi (stesso meccanismo dell'estensione Echo echo-qobuz-extension 1.0.1): ricerca su Qobuz, abbinamento con ISRC, getFileUrl firmato in MD5 per il FLAC 16/24-bit, rotazione automatica dei token e token rifiutati ricordati. L'addon BitChord resta come seconda fonte per Internet Archive. Nuovi campi per token personali e per un pool da un indirizzo. I token condivisi possono esaurirsi: in quel caso si resta su Spotify.",
+  "changelog": "4.0.0 — il catalogo Qobuz arriva dall'API ufficiale con un pool di token condivisi: ricerca su Qobuz, abbinamento con ISRC, getFileUrl firmato in MD5 per il FLAC 16/24-bit, rotazione automatica dei token e token rifiutati ricordati. L'addon BitChord resta come seconda fonte per Internet Archive. Nuovi campi per token personali e per un pool da un indirizzo. I token condivisi possono esaurirsi: in quel caso si resta su Spotify.",
   "welcome": {
     "message": "Questa versione suona il catalogo Qobuz (FLAC 16 e 24-bit) con un pool di token condivisi, e in più l'addon BitChord per Internet Archive. Se i token condivisi smettono di funzionare, aggiungi il tuo user_auth_token nelle impostazioni: l'estensione prova prima i tuoi.",
     "steps": [
