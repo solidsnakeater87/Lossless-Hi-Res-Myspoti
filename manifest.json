@@ -1,11 +1,11 @@
 {
   "id": "app.eljohnzc.lossless",
-  "name": "Qobuz Hi-Res",
-  "version": "4.3.0",
-  "versionCode": 8,
+  "name": "Lossless Hi-Res",
+  "version": "4.6.1",
+  "versionCode": 12,
   "apiVersion": 1,
   "author": "Qobuz [Heisenbergg] — port Myspoti",
-  "description": "Porta in Myspoti il catalogo Qobuz in FLAC 16/24-bit: prima con il tuo token, il login email e password o il pool condiviso, poi con i relay Qobuz-DL (arcod, instable, qobuz-dl, monochrome) che restituiscono il file intero quando gli account servono solo anteprime, infine con Internet Archive. Il relay si può spegnere o sostituire con i propri indirizzi. Se nessuna fonte ha il brano, resta su Spotify.",
+  "description": "Porta in Myspoti il catalogo Qobuz e Tidal in FLAC 16/24-bit: prima con il tuo token, il login email e password o il pool condiviso, poi con i relay che restituiscono il file intero quando gli account servono solo anteprime (Eljohnzc e Aurix — Tidal in FLAC, arcod, instable), infine con Internet Archive. Il relay si può spegnere o sostituire con i propri indirizzi. Se nessuna fonte ha il brano, resta su Spotify.",
   "category": "tools",
   "tags": [
     "qobuz",
@@ -18,21 +18,23 @@
   "media": {
     "hosts": [
       "*.akamaized.net",
-      "*.qobuz.com",
-      "arcod.xyz",
-      "*.arcod.xyz",
-      "archive.org",
       "*.archive.org",
+      "*.arcod.xyz",
+      "*.audio.tidal.com",
+      "*.qobuz.com",
+      "*.tidal.com",
+      "addon-2.aurix.dpdns.org",
       "api.arcod.xyz",
+      "archive.org",
+      "arcod.xyz",
       "instable.arcod.xyz",
-      "tracks.monochrome.st",
-      "qobuz-dll.foreyou.workers.dev"
+      "eljohnzc-addon.de.deplexo.com"
     ]
   },
   "actions": [
     {
       "name": "audio.source",
-      "why": "Riproduce in FLAC (16 e 24-bit) i brani trovati su Qobuz o nell'Archivio"
+      "why": "Riproduce in FLAC 16/24-bit i brani di Qobuz, Tidal o Archivio"
     },
     {
       "name": "download.source",
@@ -41,18 +43,20 @@
     {
       "name": "network",
       "hosts": [
-        "www.qobuz.com",
-        "*.qobuz.com",
-        "arcod.xyz",
-        "*.arcod.xyz",
-        "archive.org",
         "*.archive.org",
+        "*.arcod.xyz",
+        "*.audio.tidal.com",
+        "*.qobuz.com",
+        "*.tidal.com",
+        "addon-2.aurix.dpdns.org",
         "api.arcod.xyz",
+        "archive.org",
+        "arcod.xyz",
         "instable.arcod.xyz",
-        "tracks.monochrome.st",
-        "qobuz-dll.foreyou.workers.dev"
+        "www.qobuz.com",
+        "eljohnzc-addon.de.deplexo.com"
       ],
-      "why": "Cerca su Qobuz e Arcod, e risolve l'indirizzo del file su Qobuz, Arcod o Archive"
+      "why": "Cerca su Qobuz, sui due addon Tidal e su arcod, e risolve il file"
     },
     {
       "name": "settings.page",
@@ -106,15 +110,15 @@
     {
       "key": "relayEnabled",
       "type": "toggle",
-      "label": "Usa i relay Qobuz",
-      "description": "Il catalogo Qobuz lo servono servizi pubblici quando i token non bastano (arcod, instable, qobuz-dl, monochrome): è il ripiego che usano le estensioni Echo. Spento, restano solo i tuoi token e Internet Archive.",
+      "label": "Usa i relay (Eljohnzc, Aurix, arcod, instable)",
+      "description": "I servizi pubblici che danno il file intero quando i token servono solo anteprime: Aurix ed Eljohnzc (Tidal in FLAC, anche DASH), arcod e instable (Qobuz). Si prova quello che ha risposto per ultimo. Spento, restano solo i tuoi token e Internet Archive.",
       "default": true
     },
     {
       "key": "relayApi",
       "type": "text",
       "label": "Indirizzo del relay (avanzato)",
-      "description": "Vuoto: i quattro servizi predefiniti. Altrimenti la tua lista, separata da virgola: si prova il primo che risponde. Il prefisso mono: davanti a un indirizzo dice che parla la forma monochrome (/search/tracks e il file su /track/<id>).",
+      "description": "Vuoto: i quattro servizi predefiniti (Eljohnzc, Aurix, arcod, instable). Altrimenti la tua lista, separata da virgola: si prova il primo che risponde. Il prefisso mono: davanti a un indirizzo dice che parla la forma monochrome (/search/tracks e il file su /track/<id>); dash: dice che è un addon con manifest.",
       "default": ""
     },
     {
@@ -161,13 +165,13 @@
       "key": "testSources",
       "type": "button",
       "label": "Prova le fonti",
-      "description": "Una richiesta per fonte e un riassunto: dice quale relay risponde, se Qobuz dà file interi e se l'Archivio ha FLAC."
+      "description": "Una richiesta per fonte e un riassunto: dice quale relay risponde (e se dà un file o un manifest DASH), se Qobuz dà file interi e se l'Archivio ha FLAC."
     },
     {
       "key": "clearCache",
       "type": "button",
       "label": "Svuota cache e token",
-      "description": "Dimentica brani abbinati, token rifiutati o da anteprima, e il pool letto da un indirizzo."
+      "description": "Dimentica brani abbinati, token rifiutati o da anteprima, i relay segnati come muti e il pool letto da un indirizzo."
     },
     {
       "key": "qobuzApi",
@@ -175,15 +179,22 @@
       "label": "API Qobuz (avanzato)",
       "description": "Vuoto: https://www.qobuz.com/api.json/0.2/. Serve solo per uno specchio o per le prove in locale.",
       "default": ""
+    },
+    {
+      "key": "qobuzPlayer",
+      "type": "text",
+      "label": "Player Qobuz (avanzato)",
+      "description": "Vuoto: https://play.qobuz.com. Serve solo per uno specchio o per le prove in locale; da lì l'estensione rilegge l'app_id e la secret quando Qobuz li cambia.",
+      "default": ""
     }
   ],
   "minAppVersion": "2.0.0",
-  "changelog": "4.3.0 — più fonti invece di una: i relay elencati dall'estensione Echo Music (arcod, instable, qobuz-dl, monochrome) provati in ordine, con la memoria di quello che risponde — i servizi che tacciono finiscono in fondo, i 429 si aspettano come chiede il servizio. Si può scrivere la propria lista di indirizzi; il prefisso mono: dice che un servizio parla la forma monochrome (/search/tracks e il file su /track/<id>). Lo stato non spegne più l'estensione quando una sonda non conclude: prima bastava un relay lento perché Myspoti la mettesse in pausa e ogni brano tornasse su Spotify.",
+  "changelog": "4.6.1 — il nome passa da «Qobuz Hi-Res» a «Lossless Hi-Res»: l'estensione serve Qobuz, Tidal e Internet Archive, e il vecchio nome raccontava solo una parte. Id invariato (app.eljohnzc.lossless): si installa sopra la 4.6.0 e tiene le impostazioni. In più il tetto di tempo dell'addon vale anche per la richiesta del file, non solo per la ricerca. 4.6.0 — seconda fonte Tidal: l'addon Eljohnzc (eljohnzc-addon.de.deplexo.com). Serve lo stesso catalogo di Aurix ma con id nudi e qualità \"hires\"/\"lossless\" propri, e restituisce un manifest DASH già proxato: se Aurix tace o è lento, il brano arriva lo stesso. I due addon si interrogano in parallelo (vince la prima lista non vuota) e un id \"tidal:…\" vale per tutti e due. Eljohnzc si abbandona dopo 4 s, Aurix dopo 5 s; un addon che tace resta in castigo tre minuti. I token del pool pubblico, che rispondono solo con anteprime da 30 s, non vengono più interrogati per ogni brano: si va dritti ai relay. I file con «karaoke», «cover», «remix», «dj» nel nome si scartano se il titolo non lo dice. Nella 4.5.0 era arrivato il lato Qobuz di qobuz-dl (app_secret riletta dal bundle, login con l'app del player, avviso quando l'account non ha abbonamento).",
   "welcome": {
-    "message": "Questa versione suona il catalogo Qobuz in FLAC 16/24-bit: prima con il tuo token o le tue credenziali, poi con il relay arcod.xyz se gli account del pool servono solo anteprime; per i brani di pubblico dominio passa da Internet Archive. Se un brano resta su Spotify, nessuna delle tre fonti ce l'ha.",
+    "message": "Questa versione suona Qobuz e Tidal in FLAC 16/24-bit: prima con il tuo token o le tue credenziali, poi con i relay (Eljohnzc e Aurix per Tidal, arcod, instable) quando gli account del pool servono solo anteprime; per i brani di pubblico dominio passa da Internet Archive. Se un brano resta su Spotify, nessuna delle fonti ce l'ha.",
     "steps": [
-      "In Impostazioni ▸ Estensioni ▸ Qobuz Hi-Res scegli se usarlo in streaming.",
-      "Il relay è acceso di default e non serve alcun account: spegnilo se preferisci solo Qobuz diretto e Internet Archive.",
+      "In Impostazioni ▸ Estensioni ▸ Lossless Hi-Res scegli se usarlo in streaming.",
+      "I relay sono accesi di default e non serve alcun account: spegnili se preferisci solo Qobuz diretto e Internet Archive.",
       "Se vuoi la massima qualità e nessun terzo in mezzo, incolla un token personale o le credenziali di un account Studio."
     ]
   }

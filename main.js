@@ -1,34 +1,31 @@
 /*
- * BitChord Hi-Res — estensione per Myspoti (API 1)
- * Aggiornamento 3.0 dell'estensione "Eljohnzc Lossless": stesso id, nuovo
- * servizio. Punta all'addon BitChord Hi-Res (id dev.akira.bitchord-hires,
- * "juanjob hi res", https://bitchord-hires-addon.vercel.app).
+ * Lossless Hi-Res — estensione per Myspoti (API 1), versione 4.6.1.
+ * Stesso id dal 4.0.0: si installa sopra la versione precedente.
  * ---------------------------------------------------------------------------
- * Il servizio espone:
- *   GET /search?q=<testo>  -> { tracks: [ { id, title, artist, album,
- *                                        artworkURL, format, audioQuality,
- *                                        source, duration (solo Deezer) } ] }
- *                             Gli id hanno la fonte davanti: dz:<id> (Deezer,
- *                             metadati), ia:<item> (Internet Archive), e in
- *                             generale <sigla>:<id> per le altre fonti.
- *   GET /stream/<id>       -> { url: "https://…/file.flac", codec: "flac",
- *                               bitDepth, sampleRate, provider, quality }
- *                             oppure 404 {"error":"not available in this addon"}
- *   GET /health            -> { providers: [ { provider, reachable, ms } ] }
- *   GET <url>              -> il file FLAC (Range e HEAD supportati)
+ * Le fonti, nell'ordine in cui si provano:
+ *   1. Qobuz ufficiale: token personale, login email/password, pool condiviso.
+ *      /track/search e /track/getFileUrl (firma MD5). Il file può essere intero
+ *      o un'anteprima di 30 s ("sample": true) — le anteprime si scartano.
+ *   2. Relay, quando i token servono solo anteprime o Qobuz non ha il brano:
+ *        Eljohnzc https://eljohnzc-addon.de.deplexo.com/59efe06a96
+ *                 /search?q=  /stream/<id>?quality=hires|lossless (id nudo)
+ *        Aurix    https://addon-2.aurix.dpdns.org/<chiave>
+ *                 /search?q=            -> { tracks: [ { id: "tidal:…" } ] }
+ *                 /stream/<id>?quality= -> { url: "…/manifest.mpd", bitDepth }
+ *                 Il manifest DASH (base64) diventa un audio.manifest per
+ *                 Myspoti; per il download è un "dash-flac".
+ *        arcod    https://arcod.xyz            /api/search, /api/player/stream/<id>
+ *        instable https://instable.arcod.xyz   (stessa forma)
+ *   3. Internet Archive: /advancedsearch.php e /metadata/<item>, FLAC veri.
  *
- * Com'è fatto l'addon, e come lo gestisce l'estensione:
- *  - Deezer è solo un catalogo: per i suoi id /stream risponde sempre 404.
- *    L'estensione impara quali fonti sanno servire audio (cache 6 h) e salta
- *    le altre, così un brano commerciale torna subito su Spotify;
- *  - Internet Archive serve FLAC veri (16/24-bit) ma non dichiara artista,
- *    album né durata: l'abbinamento si regge sul titolo (anche nel formato
- *    "Artista - Titolo") e il nome del file fa da secondo controllo;
- *  - l'item di Internet Archive a volte mappa un altro brano e a volte è un
- *    concerto intero: il nome del file e la dimensione rispetto alla durata
- *    di Spotify scartano i casi sbagliati;
- *  - la ricerca non dà ISRC: l'abbinamento sta su titolo, artista, album,
- *    durata (l'ISRC si usa se prima o poi comparirà).
+ * Regole imparate a caro prezzo (4.2 → 4.4):
+ *  - Un relay è "buono" solo dopo che il file si apre davvero (HEAD): un 429
+ *    "troppi flussi" consegnato al player ferma la riproduzione.
+ *  - Se il file non si apre si prova un'altra fonte per lo stesso brano.
+ *  - Gli addon con manifest (Aurix) vengono prima quando Myspoti dichiara
+ *    audio.manifest; il loro audio non passa dal CDN dei relay Qobuz.
+ *  - Le fonti morte (qobuz-dll.foreyou.workers.dev, tracks.monochrome.st)
+ *    sono uscite dalla 4.4.0: costavano un timeout a ogni brano.
  *
  * Myspoti non conosce gli addon: conosce gli hook. Questa estensione fa ponte:
  *   audio-source     -> l'URL del FLAC da riprodurre
@@ -38,7 +35,7 @@
  * Tutto è sincrono (Rhino, niente promise): i callback restituiscono il valore.
  */
 
-var PROVIDER = 'Qobuz Hi-Res';
+var PROVIDER = 'Lossless Hi-Res';
 
 /* --- Internet Archive, interrogato direttamente (niente addon di terzi) --- */
 var IA = 'https://archive.org';
@@ -71,6 +68,7 @@ var SHARED_TOKENS = [
 ];
 var QOBUZ_APP = { appId: '798273057', appSecret: 'abb21364945c0583309667d13ca3d93a' };
 var QOBUZ_LOGIN_APP = '712109809'; // l'unica app che accetta user/login con email e password
+var QOBUZ_BUNDLE_TTL_MS = 24 * 60 * 60 * 1000; // la secret del player cambia a ogni versione
 
 /*
  * Il relay Qobuz: un servizio pubblico che parla con Qobuz per noi e restituisce
@@ -692,6 +690,18 @@ function rankCandidates(list, track, hiResBias) {
 /* Relay Qobuz: più servizi, tre forme di API                          */
 /* ------------------------------------------------------------------ */
 
+/** C'è almeno un account del pool che può servire un file intero? */
+function qobuzCanServe() {
+  var pool = tokenPool();
+  for (var i = 0; i < pool.length; i++) {
+    var e = pool[i];
+    if (e.deadUntil && e.deadUntil > now()) continue;
+    if (previewOnly(e.token)) continue;
+    return true;
+  }
+  return false;
+}
+
 /** Il relay si usa? (spento, l'estensione prova solo Qobuz diretto e Archivio) */
 function relayEnabled() {
   var v = setting('relayEnabled', true);
@@ -709,10 +719,19 @@ function relayEnabled() {
  * solo quelli che rispondono davvero.
  */
 var RELAY_SOURCES = [
+  // Aurix: addon che serve il catalogo Tidal in FLAC, anche 24-bit, sotto forma
+  // di DASH (un MPD con i segmenti già firmati). È la fonte più completa.
+  // Eljohnzc: l'altro addon Tidal (id nudi, qualità "hires"/"lossless"), il
+  // progenitore di questa estensione. Stesso catalogo di Aurix, quindi un id
+  // "tidal:…" vale per tutti e due: se uno tace si prova l'altro. Va per primo
+  // perché di solito risponde in meno di un secondo, ma a freddo può incagliarsi:
+  // il tetto di 4 s lo taglia fuori e il brano passa ad Aurix.
+  { key: 'eljohnzc', base: 'https://eljohnzc-addon.de.deplexo.com/59efe06a96', shape: 'dash',
+    q: ['hires', 'lossless'], plain: true, cap: 4000, catalog: 'tidal' },
+  { key: 'aurix', base: 'https://addon-2.aurix.dpdns.org/free_rLnRPnC6oZF5gvAx', shape: 'dash',
+    catalog: 'tidal' },
   { key: 'arcod', base: 'https://arcod.xyz', shape: 'arcod' },
-  { key: 'instable', base: 'https://instable.arcod.xyz', shape: 'arcod' },
-  { key: 'qobuz-dl', base: 'https://qobuz-dll.foreyou.workers.dev', shape: 'qobuzdl' },
-  { key: 'monochrome', base: 'https://tracks.monochrome.st', shape: 'monochrome' }
+  { key: 'instable', base: 'https://instable.arcod.xyz', shape: 'arcod' }
 ];
 
 /**
@@ -739,6 +758,10 @@ function relaySources() {
     if (/^mono:/i.test(b)) {
       shape = 'monochrome';
       b = b.replace(/^mono:/i, '');
+    } else if (/^dash:/i.test(b)) {
+      // `dash:https://…` per un addon che risponde /stream/<id> con un manifest.
+      shape = 'dash';
+      b = b.replace(/^dash:/i, '');
     }
     if (!/^https?:\/\//i.test(b)) b = 'https://' + b;
     b = b.replace(/\/+$/, '');
@@ -802,18 +825,53 @@ function relayNoteOk(base) {
   relaySave(st);
 }
 
+/** Myspoti sa suonare un manifest DASH? (serve agli addon come Aurix) */
+function dashSupported() {
+  return !(myspoti.features && myspoti.features.indexOf('audio.manifest') < 0);
+}
+
+/** C'è un addon DASH sano (Aurix, Eljohnzc) a cui chiedere il brano? */
+function dashSourceUsable() {
+  if (!dashSupported()) return false;
+  var srcs = relaySources();
+  for (var i = 0; i < srcs.length; i++) {
+    if (srcs[i].shape !== 'dash') continue;
+    if (relayRecentlyBad(srcs[i].base)) continue;
+    if (relayLimited(srcs[i].base)) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Qualche servizio che accetta id Qobuz (numerici) è utilizzabile? */
+function relayIdSourceUsable() {
+  var srcs = relayOrder('');
+  for (var i = 0; i < srcs.length; i++) {
+    var src = srcs[i];
+    if (src.shape === 'monochrome' || src.shape === 'dash') continue;
+    if (relayLimited(src.base)) continue;
+    if (relayRecentlyBad(src.base)) continue;
+    return true;
+  }
+  return false;
+}
+
 /** Vero se questo indirizzo ha appena taciuto del tutto (rete, DNS, timeout). */
 function relayRecentlyBad(base) {
   var st = relayState();
   var at = st.bad && st.bad[base] ? st.bad[base] : 0;
-  return at > 0 && now() - at < 10 * 60000;
+  var ttl = st.badTtl && st.badTtl[base] ? st.badTtl[base] : 10 * 60000;
+  return at > 0 && now() - at < ttl;
 }
 
 /** Ricorda che questo indirizzo non ha risposto (rete, 5xx): per un po' va in fondo. */
-function relayNoteBad(base) {
+function relayNoteBad(base, ttlMs) {
   var st = relayState();
   st.bad = st.bad || {};
   st.bad[base] = now();
+  st.badTtl = st.badTtl || {};
+  if (ttlMs) st.badTtl[base] = ttlMs;
+  else delete st.badTtl[base];
   relaySave(st);
 }
 
@@ -844,10 +902,24 @@ function relayOrder(preferKey) {
     var okAt = st.ok && st.ok[src.base] ? st.ok[src.base] : 0;
     var badAt = st.bad && st.bad[src.base] ? st.bad[src.base] : 0;
     var tier = 1;
+    var recentBad = badAt && now() - badAt < 10 * 60000;
     if (preferKey && src.key === preferKey) tier = 0;
+    else if (recentBad) tier = 2;
+    // Gli addon che danno un manifest (Aurix → Tidal) vengono per primi: il
+    // loro audio non passa dal CDN dei relay Qobuz, quello che risponde 429.
+    else if (src.shape === 'dash' && dashSupported()) tier = 0;
     else if (okAt && now() - okAt < 30 * 60000) tier = 0;
-    else if (badAt && now() - badAt < 10 * 60000) tier = 2;
-    copy.push({ key: src.key, base: src.base, shape: src.shape, _o: tier * 100 + i });
+    // Si copiano anche le proprietà della fonte (`q`, `cap`, `plain`,
+    // `catalog`): senza, ogni addon tornerebbe a parlare «hi_res» con l'id
+    // sbagliato e senza tetto di tempo — com'è successo alla 4.6.0 beta.
+    var one = { key: src.key, base: src.base, shape: src.shape };
+    for (var k in src) {
+      if (!src.hasOwnProperty(k)) continue;
+      if (k === 'key' || k === 'base' || k === 'shape') continue;
+      one[k] = src[k];
+    }
+    one._o = tier * 100 + i;
+    copy.push(one);
   }
   copy.sort(function (a, b) { return a._o - b._o; });
   for (var j = 0; j < copy.length; j++) delete copy[j]._o;
@@ -903,10 +975,15 @@ function relaySearchPaths(src, q) {
   var arcod = ['/api/search?q=' + q + '&limit=20'];
   var qobuzdl = ['/api/get-music?q=' + q + '&limit=20&offset=0'];
   var mono = ['/search/tracks?q=' + q + '&limit=10'];
+  // L'addon Aurix risponde come quelli di Echo: /search?q= (e /stream/<id>).
+  var addon = ['/search?q=' + q];
+  if (src.shape === 'dash') return addon.concat(arcod);
   if (src.shape === 'arcod') return arcod.concat(qobuzdl);
   if (src.shape === 'qobuzdl') return qobuzdl.concat(arcod);
   if (src.shape === 'monochrome') return mono;
-  return relayShape() === 'kenny' ? qobuzdl.concat(arcod, mono) : arcod.concat(qobuzdl, mono);
+  // Un indirizzo scritto a mano non dichiara la sua forma: si prova anche
+  // /search?q=, che è quella degli addon (Aurix).
+  return relayShape() === 'kenny' ? qobuzdl.concat(arcod, mono, addon) : arcod.concat(qobuzdl, mono, addon);
 }
 
 /** Le vie del file di un servizio. */
@@ -925,6 +1002,74 @@ function relayStreamPaths(src, trackId, quality) {
   if (src.shape === 'qobuzdl') return qds;
   if (src.shape === 'monochrome') return ['/track/' + id];
   return arcs.concat(qds);
+}
+
+/**
+ * Il file di un addon DASH: si chiede /stream/<id>, che restituisce un MPD con i
+ * segmenti già firmati; l'MPD si scarica (pochi KB) e si consegna a Myspoti in
+ * base64, come vuole il suo "lossless DASH" (FLAC dentro MP4 frammentato).
+ */
+var dashAnswered = false;
+
+function relayDash(src, trackId, wantHiRes, capMs) {
+  // Ogni addon chiama la qualità a modo suo: Aurix "hi_res", Eljohnzc "hires".
+  var names = src.q && src.q.length ? src.q : ['hi_res', 'lossless'];
+  var hi = names[0];
+  var lo = names[1] || 'lossless';
+  var qualities = wantHiRes ? [hi, lo] : [lo, hi];
+  // Il tetto dell'addon (4-5 s) vale anche per il file: un servizio che si
+  // impunta non deve bruciare gli otto secondi di un relay che DASH non lo
+  // parla affatto.
+  var cap = Math.min(capMs || src.cap || 5000, 6000);
+  dashAnswered = false;
+  for (var q = 0; q < qualities.length; q++) {
+    if (leftMs() < 3000) return null;
+    var res = relayAt(src.base, '/stream/' + encodeURIComponent(trackId) + '?quality=' + qualities[q], cap);
+    if (!res) continue;
+    dashAnswered = true;
+    var b = res.body || {};
+    var mpdUrl = typeof b.url === 'string' ? b.url : '';
+    // Solo https, con l'eccezione di un servizio di prova in locale.
+    var protoOk = /^https:\/\//i.test(mpdUrl) ||
+      /^http:\/\/(127\.0\.0\.1|localhost)(?::|\/)/i.test(mpdUrl);
+    if (!mpdUrl || !protoOk) continue;
+    if (b.encrypted === true) continue;
+    if (leftMs() < 2500) return null;
+    // Il manifest è piccolo (2 KB) ma il servizio a volte si impunta: un
+    // secondo tentativo corto costa meno di un brano perso.
+    var xml = httpText(mpdUrl, 4000);
+    if (!xml) xml = httpText(mpdUrl, 2500);
+    if (!xml || xml.indexOf('SegmentTemplate') < 0 || xml.indexOf('SegmentTimeline') < 0) {
+      myspoti.log('relay ' + src.key + ': MPD non utilizzabile');
+      continue;
+    }
+    var b64;
+    try {
+      b64 = myspoti.util.base64Encode(xml);
+    } catch (e) {
+      myspoti.log('relay ' + src.key + ': base64 del MPD: ' + e);
+      continue;
+    }
+    relayNoteOk(src.base);
+    return {
+      manifest: b64,
+      mimeType: 'audio/mp4',
+      codec: 'flac',
+      bitDepth: parseInt(b.bitDepth, 10) || 0,
+      sampleRate: parseInt(b.sampleRate, 10) || 0,
+      quality: qualities[q],
+      base: src.base,
+      status: 200,
+      dash: true
+    };
+  }
+  return null;
+}
+
+/** L'id di un candidato senza il prefisso `rl:`. */
+function relayIdOf(id) {
+  var s = String(id || '');
+  return s.indexOf(RELAY_PREFIX) === 0 ? s.slice(RELAY_PREFIX.length) : s;
 }
 
 /** Una risposta del relay nella forma dei candidati (id con prefisso `rl:`). */
@@ -948,6 +1093,13 @@ function relayNormalize(body, src) {
     if (typeof dur === 'number' && dur > 3600) dur = Math.round(dur / 1000); // millisecondi
     var depth = t.maximum_bit_depth || 0;
     var rate = t.maximum_sampling_rate || 0;
+    if (!depth && /HI_RES/i.test(String(t.audioQuality || ''))) {
+      depth = 24;
+      rate = rate || 44.1;
+    } else if (!depth && /LOSSLESS/i.test(String(t.audioQuality || ''))) {
+      depth = 16;
+      rate = rate || 44.1;
+    }
     out.push({
       id: RELAY_PREFIX + t.id,
       title: trim(title),
@@ -958,7 +1110,7 @@ function relayNormalize(body, src) {
       audioQuality: depth ? (depth + '-bit / ' + rate + ' kHz') : '',
       hires: !!t.hires,
       sourceKey: src.key,
-      source: 'Qobuz (relay)'
+      source: src.shape === 'dash' ? 'Tidal (addon)' : 'Qobuz (relay)'
     });
   }
   return out;
@@ -969,24 +1121,106 @@ function relayNormalize(body, src) {
  * vince. Ogni ricerca in più costa (arcod ne concede quattordici al minuto),
  * quindi si smette appena un servizio dà dei risultati.
  */
+/**
+ * Le ricerche degli addon Tidal partono insieme (`myspoti.http.all`): Aurix ed
+ * Eljohnzc hanno lo stesso catalogo ma latenze diverse, e a freddo uno dei due
+ * può incagliarsi. Aspettare il più lento di due risposte costa meno che
+ * aspettare la prima e poi la seconda.
+ * Restituisce [{ src, items }] oppure null se `http.all` non c'è.
+ */
+function relaySearchDashParallel(srcs, q) {
+  if (!srcs.length) return null;
+  if (!myspoti.http || !myspoti.http.all) return null;
+  var reqs = [];
+  for (var i = 0; i < srcs.length; i++) {
+    // Tetto corto: se un addon è incagliato, meglio passare all'Archivio che
+    // consumare i quindici secondi del brano aspettando lui.
+    reqs.push({
+      url: srcs[i].base + '/search?q=' + q,
+      method: 'GET',
+      timeout: timeoutFor(Math.min(srcs[i].cap || 6000, 4000))
+    });
+  }
+  var ans = null;
+  try {
+    ans = myspoti.http.all(reqs);
+  } catch (e) {
+    myspoti.log('ricerca in parallelo: ' + e);
+    return null;
+  }
+  if (!ans || !ans.length) return null;
+  var out = [];
+  for (var j = 0; j < ans.length && j < srcs.length; j++) {
+    var r = ans[j];
+    if (!r || r.error || !r.body) {
+      // Silenzio (o errore di rete): per tre minuti questo addon non si
+      // interroga più, così il brano successivo non paga un'altra attesa.
+      relayNoteBad(srcs[j].base, 3 * 60000);
+      continue;
+    }
+    var body = null;
+    try {
+      body = JSON.parse(r.body);
+    } catch (e2) {
+      continue;
+    }
+    if (!body) continue;
+    var items = relayNormalize(body, srcs[j]);
+    if (items.length) relayNoteOk(srcs[j].base);
+    out.push({ src: srcs[j], items: items });
+  }
+  return out;
+}
+
 function relaySearchTracks(query) {
   if (!trim(query)) return [];
   if (!relayEnabled()) return [];
   var q = encodeURIComponent(query);
   relayBudget(4);
   var srcs = relayOrder('');
+  // Gli addon Tidal si chiedono insieme: è la strada che serve i brani
+  // mainstream, e due latenze in parallelo costano meno di una somma.
+  var dash = [];
+  var sent = {};
+  for (var d = 0; d < srcs.length; d++) {
+    if (srcs[d].shape !== 'dash') continue;
+    if (relayLimited(srcs[d].base) || relayRecentlyBad(srcs[d].base)) continue;
+    dash.push(srcs[d]);
+  }
+  if (dash.length && dashSupported()) {
+    var together = relaySearchDashParallel(dash, q);
+    if (together) {
+      // Gli addon sono già stati interrogati: non si richiamano uno per uno
+      // (a freddo costerebbe altri dieci secondi per un secondo silenzio).
+      var first = null;
+      for (var d2 = 0; d2 < dash.length; d2++) sent[dash[d2].base] = true;
+      for (var t = 0; t < together.length; t++) {
+        if (!first && together[t].items.length) first = together[t].items;
+      }
+      if (first) return first;
+    }
+  }
   for (var s = 0; s < srcs.length; s++) {
     var src = srcs[s];
+    if (sent[src.base]) continue;
     if (relayLimited(src.base)) continue;
     // Un servizio che poco fa non ha risposto affatto non si richiama per dieci
     // minuti: senza questa riga un host morto costerebbe un timeout a ogni brano.
     if (relayRecentlyBad(src.base)) continue;
     var paths = relaySearchPaths(src, q);
     var answered = false;
+    var tried = 0;
     for (var p = 0; p < paths.length; p++) {
       if (leftMs() < 1500) return [];
-      var res = relayAt(src.base, paths[p], src.shape === 'monochrome' ? 3000 : 6000);
-      if (!res) continue;
+      var res = relayAt(src.base, paths[p], src.cap || (src.shape === 'monochrome' ? 3000 : 6000));
+      tried++;
+      // Un host che non risponde alla prima forma non risponde nemmeno alle
+      // altre: insistere costerebbe un timeout per ogni forma e mangerebbe il
+      // tetto di richieste, lasciando a bocca asciutta i servizi veri.
+      if (!res) {
+        if (tried === 1) break;
+        continue;
+      }
       answered = true;
       var items = relayNormalize(res.body, src);
       if (items.length) {
@@ -996,10 +1230,57 @@ function relaySearchTracks(query) {
       }
       if (res.status >= 200 && res.status < 300) break; // risposta valida ma vuota
     }
-    if (!answered && !relayLimited(src.base)) relayNoteBad(src.base);
+    if (tried && !answered && !relayLimited(src.base)) relayNoteBad(src.base);
     if (leftMs() < 1500) break;
   }
   return [];
+}
+
+/**
+ * Il file si apre davvero? Un HEAD costa poco e dice due cose: se il servizio lo
+ * serve (un 429 "troppi flussi" arriva qui, prima che il player ci sbatte) e
+ * quanto pesa. Se la richiesta non risponde affatto non è una prova: si procede.
+ */
+function relayMediaOk(url) {
+  var host = String(url || '').replace(/^https?:\/\//i, '').split('/')[0].toLowerCase();
+  // Un host che poco fa ha risposto "troppi flussi" non si richiama per tre
+  // minuti: la risposta sarebbe la stessa e costerebbe un'altra attesa.
+  if (mediaHostBad(host)) return { ok: false, size: 0, status: 429, cached: true };
+  try {
+    var r = myspoti.http.request({ url: url, method: 'HEAD', timeout: timeoutFor(1800) });
+    if (!r || !r.status) return { ok: true, size: 0, status: 0 };
+    var size = 0;
+    if (r.headers) {
+      var raw = r.headers['content-length'];
+      var n = raw ? parseInt(String(raw).split(',')[0], 10) : 0;
+      if (n > 0) size = n;
+    }
+    if (r.status === 200 || r.status === 206) return { ok: true, size: size, status: r.status };
+    if (r.status === 429 || r.status === 401 || r.status === 403 ||
+        r.status === 404 || r.status === 410 || r.status >= 500) {
+      if (r.status === 429) noteMediaHostBad(host);
+      return { ok: false, size: 0, status: r.status };
+    }
+    return { ok: true, size: size, status: r.status };
+  } catch (e) {
+    return { ok: true, size: 0, status: 0 };
+  }
+}
+
+/** Il CDN che serve i file ha detto "troppi flussi" da poco? (3 minuti) */
+var MEDIA_BAD_MS = 3 * 60 * 1000;
+
+function mediaHostBad(host) {
+  var st = relayState();
+  var at = st.media_bad && st.media_bad[host] ? st.media_bad[host] : 0;
+  return !!at && now() - at < MEDIA_BAD_MS;
+}
+
+function noteMediaHostBad(host) {
+  var st = relayState();
+  st.media_bad = st.media_bad || {};
+  st.media_bad[host] = now();
+  relaySave(st);
 }
 
 /** L'indirizzo del file dentro una risposta del relay, se c'è. */
@@ -1017,13 +1298,14 @@ function relayUrlOf(body) {
  * arcod, instable e Qobuz-DL; quelli di monochrome solo per monochrome), con
  * l'hi-res e poi il 16-bit.
  */
-function relayStreamUrl(trackId, wantHiRes, srcKey) {
+function relayStreamUrl(trackId, wantHiRes, srcKey, skip) {
   var qualities = wantHiRes ? [FORMAT_HI, FORMAT_CD] : [FORMAT_CD, FORMAT_HI];
   relayBudget(6);
   var srcs = relayOrder(srcKey || '');
   var lastStatus = 0;
   for (var s = 0; s < srcs.length; s++) {
     var src = srcs[s];
+    if (skip && skip[src.base]) continue;
     // Il tetto di richieste vale per le ricerche, non per i file: qui si prova
     // sempre, anche se poco fa una ricerca è stata respinta.
     // Un id di monochrome non vale per gli altri servizi, e viceversa.
@@ -1038,24 +1320,64 @@ function relayStreamUrl(trackId, wantHiRes, srcKey) {
         direct: true
       };
     }
+    // Gli id degli addon hanno la forma "tidal:123456"; un id solo numerico
+    // (Qobuz) non li riguarda.
+    var dashId = /^[A-Za-z0-9_-]+:/.test(String(trackId));
+    var manifestOk = !(myspoti.features && myspoti.features.indexOf('audio.manifest') < 0);
+    if (src.shape === 'dash' || (src.shape === 'auto' && dashId)) {
+      // Un id con la fonte davanti ("tidal:123") vale per tutti gli addon
+      // Tidal; un id nudo vale solo per l'addon che l'ha dato. Si prova prima
+      // com'è e poi senza prefisso, così un id di Aurix arriva anche a
+      // Eljohnzc, che vuole il numero secco.
+      if (!manifestOk) continue;
+      // Due addon dello stesso catalogo (Tidal) si scambiano gli id: uno li
+      // vuole nudi, l'altro con "tidal:" davanti. Un catalogo diverso no.
+      var fromSrc = null;
+      var all = relaySources();
+      for (var q2 = 0; q2 < all.length; q2++) if (all[q2].key === srcKey) fromSrc = all[q2];
+      var sameCatalog = !!(src.catalog && fromSrc && fromSrc.catalog === src.catalog);
+      if (!dashId && srcKey && srcKey !== src.key && !sameCatalog) continue;
+      if (!dashId && !srcKey) continue;
+      var fullDash = String(trackId);
+      var bareDash = fullDash.replace(/^[A-Za-z0-9_-]+:/, '');
+      var forms;
+      if (fullDash !== bareDash) forms = src.plain ? [bareDash, fullDash] : [fullDash, bareDash];
+      else if (src.plain) forms = [bareDash];
+      else if (src.catalog === 'tidal') forms = ['tidal:' + bareDash, bareDash];
+      else forms = [fullDash];
+      var viaDash = null;
+      // Un addon vero (`shape: 'dash'`) ha il suo tetto; un relay JSON di cui
+      // non si sa nulla si sonda appena, senza pagare un timeout intero.
+      var dashCap = src.shape === 'dash' ? (src.cap || 5000) : 2500;
+      for (var f = 0; f < forms.length && !viaDash; f++) {
+        viaDash = relayDash(src, forms[f], wantHiRes, dashCap);
+      }
+      if (viaDash) return viaDash;
+      if (dashAnswered) continue;
+      if (src.shape === 'dash') { relayNoteBad(src.base); continue; }
+    }
     var answered = false;
+    var tried = 0;
     for (var q = 0; q < qualities.length; q++) {
       var paths = relayStreamPaths(src, trackId, qualities[q]);
       for (var p = 0; p < paths.length; p++) {
         if (leftMs() < 1500) return { status: lastStatus };
         var res = relayAt(src.base, paths[p], 6000);
-        if (!res) continue;
+        tried++;
+        // Se il servizio non risponde affatto, le altre vie non cambiano nulla.
+        if (!res) break;
         answered = true;
         lastStatus = res.status;
         var url = relayUrlOf(res.body);
         if (url) {
-          relayNoteOk(src.base);
+          // L'indirizzo c'è, ma non è detto che il file si apra: la prova vera
+          // (HEAD) è in relayAnswer, ed è quella che decide se il servizio è ok.
           return { url: url, quality: qualities[q], base: src.base, status: res.status };
         }
       }
     }
     // Nessuna risposta affatto: il servizio è giù, per un po' si prova dopo gli altri.
-    if (!answered) relayNoteBad(src.base);
+    if (tried && !answered) relayNoteBad(src.base);
   }
   if (lastStatus) myspoti.log('relay ' + trackId + ': HTTP ' + lastStatus);
   return { status: lastStatus };
@@ -1065,40 +1387,77 @@ function relayStreamUrl(trackId, wantHiRes, srcKey) {
  * La risposta del relay per un id: l'URL, più la qualità dichiarata dal catalogo
  * (quella del file la decide il servizio: chiedendo il 24-bit su un album 16-bit
  * torna il 16-bit, quindi non si promette nulla che non sia nel catalogo).
+ * Se il servizio risponde ma il file non si apre (tipico: 429 "troppi flussi"),
+ * si passa al servizio successivo invece di lasciare il brano a Spotify.
  */
 function relayAnswer(trackId, wantHiRes, qualityText, wantSize, srcKey) {
-  var got = relayStreamUrl(trackId, wantHiRes, srcKey);
-  if (!got || !got.url) {
-    var why = got && got.status ? got.status : 0;
-    return { ok: false, reason: (why === 404 || why === 400) ? 'no-audio' : 'error' };
-  }
-  // La qualità si prende dal catalogo; senza quel dato si dice solo quello che
-  // è certo (il 16/44.1 quando si è chiesto il CD), mai un 24-bit inventato.
-  var depth = bitDepthOf({ audioQuality: qualityText });
-  var rate = sampleRateOf({ audioQuality: qualityText });
-  if (!depth && got.quality === FORMAT_CD) {
-    depth = 16;
-    rate = 44100;
-  }
-  var size = wantSize ? sizeOf(got.url) : 0;
-  myspoti.log('relay ' + trackId + ': FLAC da ' + got.base.replace(/^https?:\/\//, '') +
-    ' (' + (depth ? depth + '-bit / ' + Math.round(rate / 1000) + ' kHz' : 'qualità dichiarata dal catalogo') +
-    ')' + (size ? ', ' + Math.round(size / 1048576) + ' MB' : ''));
-  return {
-    ok: true,
-    answer: {
-      url: got.url,
-      format: 'flac',
-      codec: 'flac',
-      bitDepth: depth,
-      sampleRate: rate,
-      size: size,
-      source: depth ? '' : 'FLAC · Qobuz (relay)',
-      expiresAt: now() + RELAY_TTL_MS,
-      at: now(),
-      isrcMatched: false
+  var skip = {};
+  for (var round = 0; round < 3; round++) {
+    var got = relayStreamUrl(trackId, wantHiRes, srcKey, skip);
+    if (got && got.manifest) {
+      myspoti.log('relay ' + trackId + ': FLAC DASH da ' + got.base.replace(/^https?:\/\//, '') +
+        ' (' + (got.bitDepth || '?') + '-bit / ' + Math.round((got.sampleRate || 0) / 1000) + ' kHz)');
+      return {
+        ok: true,
+        answer: {
+          manifest: got.manifest,
+          mimeType: got.mimeType || 'audio/mp4',
+          format: 'flac',
+          codec: 'flac',
+          bitDepth: got.bitDepth || 0,
+          sampleRate: got.sampleRate || 0,
+          size: 0,
+          source: 'FLAC · Tidal',
+          expiresAt: now() + Math.min(RELAY_TTL_MS, 30 * 60000),
+          at: now(),
+          isrcMatched: false
+        }
+      };
     }
-  };
+    if (!got || !got.url) {
+      var why = got && got.status ? got.status : 0;
+      return { ok: false, reason: (why === 404 || why === 400) ? 'no-audio' : 'error' };
+    }
+    // La qualità si prende dal catalogo; senza quel dato si dice solo quello che
+    // è certo (il 16/44.1 quando si è chiesto il CD), mai un 24-bit inventato.
+    var depth = bitDepthOf({ audioQuality: qualityText });
+    var rate = sampleRateOf({ audioQuality: qualityText });
+    if (!depth && got.quality === FORMAT_CD) {
+      depth = 16;
+      rate = 44100;
+    }
+    var probe = relayMediaOk(got.url);
+    if (!probe.ok) {
+      // Il servizio risponde ma il file no: per un po' lo si mette in fondo, e
+      // intanto si chiede lo stesso brano a un altro servizio.
+      relayNoteBad(got.base);
+      skip[got.base] = 1;
+      myspoti.log('relay ' + trackId + ': il file non si apre (' + probe.status + ') da ' +
+        got.base.replace(/^https?:\/\//, '') + " — provo un'altra fonte");
+      continue;
+    }
+    relayNoteOk(got.base);
+    var size = probe.size || (wantSize ? sizeOf(got.url) : 0);
+    myspoti.log('relay ' + trackId + ': FLAC da ' + got.base.replace(/^https?:\/\//, '') +
+      ' (' + (depth ? depth + '-bit / ' + Math.round(rate / 1000) + ' kHz' : 'qualità dichiarata dal catalogo') +
+      ')' + (size ? ', ' + Math.round(size / 1048576) + ' MB' : ''));
+    return {
+      ok: true,
+      answer: {
+        url: got.url,
+        format: 'flac',
+        codec: 'flac',
+        bitDepth: depth,
+        sampleRate: rate,
+        size: size,
+        source: depth ? '' : 'FLAC · Qobuz (relay)',
+        expiresAt: now() + RELAY_TTL_MS,
+        at: now(),
+        isrcMatched: false
+      }
+    };
+  }
+  return { ok: false, reason: 'error' };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1453,6 +1812,87 @@ function md5hex(input) {
  * "trackgetFileUrl" + "format_id<N>" + "intentstream" + "track_id<ID>" +
  * timestamp + app_secret. Senza firma l'API risponde 400.
  */
+/**
+ * La coppia app_id / app_secret del player Qobuz.
+ *
+ * Qobuz cambia la secret a ogni versione del player web: qobuz-dl la estrae dal
+ * bundle (`/resources/<versione>/bundle.js`) a ogni avvio, e questa estensione
+ * fa lo stesso — ma solo quando serve, perché il bundle pesa 9 MB.
+ * `qobuz_bundle` in storage tiene l'ultima coppia letta per 24 ore.
+ */
+function qobuzDefaultApp() {
+  var st = myspoti.storage.get('qobuz_bundle');
+  if (st && st.appSecret && st.at && (now() - st.at) < QOBUZ_BUNDLE_TTL_MS &&
+      String(st.appId) === QOBUZ_APP.appId) {
+    return { appId: String(st.appId), appSecret: String(st.appSecret) };
+  }
+  return { appId: QOBUZ_APP.appId, appSecret: QOBUZ_APP.appSecret };
+}
+
+/** La secret da usare per un token: quella dell'app di casa può essere più nuova. */
+function secretFor(entry) {
+  var def = qobuzDefaultApp();
+  if (String(entry && entry.appId ? entry.appId : '') === def.appId && def.appSecret) return def.appSecret;
+  return (entry && entry.appSecret) || def.appSecret;
+}
+
+/**
+ * Rilegge app_id e app_secret dal player web. Il bundle intero è 9 MB (Myspoti
+ * si ferma a 5), ma la coppia sta a 1,4 MB: basta la prima fetta, chiesta con
+ * `Range`. Se il server ignora `Range` risponde 200 con il file intero, che
+ * Myspoti tronca a 5 MB — la coppia c'è comunque.
+ * Restituisce true se ha trovato qualcosa di nuovo.
+ */
+/** Il player web di Qobuz (per le prove si può puntare al finto servizio). */
+function qobuzPlayerBase() {
+  var v = trim(String(setting('qobuzPlayer', '') || ''));
+  return v ? v.replace(/\/+$/, '') : 'https://play.qobuz.com';
+}
+
+function refreshQobuzBundle() {
+  var base = qobuzPlayerBase();
+  var page = httpText(base + '/login', 5000);
+  if (!page) {
+    myspoti.log('qobuz: pagina del player non raggiungibile');
+    return false;
+  }
+  var m = /<script[^>]+src="(\/resources\/[^"]+bundle\.js)"/.exec(page);
+  if (!m) {
+    myspoti.log('qobuz: bundle non trovato nella pagina del player');
+    return false;
+  }
+  var js = '';
+  try {
+    var r = myspoti.http.request({
+      url: base + m[1],
+      method: 'GET',
+      headers: { 'Range': 'bytes=0-2000000', 'Accept': '*/*' },
+      timeout: timeoutFor(8000)
+    });
+    if (r && r.body) js = String(r.body);
+  } catch (e) {
+    myspoti.log('qobuz: bundle non letto (' + e + ')');
+    return false;
+  }
+  var p = /production:\{api:\{appId:"(\d{9})",appSecret:"(\w{32})"/.exec(js);
+  if (!p) {
+    myspoti.log('qobuz: app_id/app_secret non trovati nel bundle');
+    return false;
+  }
+  if (p[1] !== QOBUZ_APP.appId) {
+    // Un'altra app non vale per i token che abbiamo: si tiene quella vecchia.
+    myspoti.log('qobuz: il player usa l\'app ' + p[1] + ', non ' + QOBUZ_APP.appId);
+    return false;
+  }
+  try {
+    myspoti.storage.set('qobuz_bundle', { appId: p[1], appSecret: p[2], at: now() });
+  } catch (e) {
+    myspoti.log('storage piena: ' + e);
+  }
+  myspoti.log('qobuz: app_secret aggiornata dal player');
+  return true;
+}
+
 function qobuzSign(ts, trackId, formatId, appSecret) {
   return md5hex('trackgetFileUrl' + 'format_id' + formatId + 'intentstream' +
     'track_id' + trackId + ts + appSecret);
@@ -1476,6 +1916,19 @@ function qobuzLogin(force) {
     password: md5hex(password),
     app_id: QOBUZ_LOGIN_APP
   }, 6000);
+  // Come qobuz-dl: se l'app «storica» non è più accettata si riprova con
+  // l'app_id del player web (quello del bundle).
+  if (res && res.status === 400 && res.body && /app.?id/i.test(String(res.body.message || ''))) {
+    var alt = qobuzDefaultApp();
+    if (alt.appId !== QOBUZ_LOGIN_APP) {
+      myspoti.log('qobuz: login riprovato con l\'app del player (' + alt.appId + ')');
+      res = httpPostForm(qobuzApi() + 'user/login', {
+        email: email,
+        password: md5hex(password),
+        app_id: alt.appId
+      }, 6000);
+    }
+  }
   if (!res || !res.body) {
     myspoti.log('qobuz: login senza risposta');
     return null;
@@ -1494,13 +1947,29 @@ function qobuzLogin(force) {
     return null;
   }
   var token = String(res.body.user_auth_token);
+  // Come qobuz-dl: `user.credential.parameters` vuoto = account senza
+  // abbonamento, e Qobuz serve solo 30 secondi. Meglio dirlo che far credere
+  // che il brano sia rotto.
+  var cred = res.body.user && res.body.user.credential ? res.body.user.credential : null;
+  var pars = cred && cred.parameters ? cred.parameters : null;
+  var plan = pars && pars.short_label ? String(pars.short_label) : '';
   try {
-    myspoti.storage.set('qobuz_login', { token: token, at: now() });
+    myspoti.storage.set('qobuz_login', { token: token, at: now(), plan: plan });
     myspoti.storage.remove('qobuz_login_bad');
+    if (plan) myspoti.storage.remove('qobuz_login_free');
+    else myspoti.storage.set('qobuz_login_free', { at: now() });
   } catch (e) {
     myspoti.log('storage piena: ' + e);
   }
-  myspoti.log('qobuz: login riuscito, token rinnovato');
+  if (plan) myspoti.log('qobuz: login riuscito (' + plan + '), token rinnovato');
+  else {
+    myspoti.log('qobuz: login riuscito ma l\'account non ha un abbonamento attivo — solo anteprime da 30 s');
+    try {
+      myspoti.notify('Qobuz: l\'account non ha un abbonamento attivo, arrivano solo anteprime da 30 s');
+    } catch (e) {
+      myspoti.log('notify: ' + e);
+    }
+  }
   return token;
 }
 
@@ -1584,16 +2053,18 @@ function tokenPool() {
   var seen = {};
 
   function add(entry, source) {
-    if (!entry || !entry.token || seen[entry.token]) return;
+    if (!entry || !entry.token || seen[entry.token]) return null;
     seen[entry.token] = true;
     var at = dead[entry.token] || 0;
-    out.push({
+    var one = {
       token: entry.token,
       appId: String(entry.appId || QOBUZ_APP.appId),
       appSecret: String(entry.appSecret || QOBUZ_APP.appSecret),
       source: source,
       deadUntil: at && (now() - at) < TOKEN_DEAD_MS ? at + TOKEN_DEAD_MS : 0
-    });
+    };
+    out.push(one);
+    return one;
   }
 
   // 0. Il token del login (email + password): si rinnova da solo.
@@ -1622,7 +2093,13 @@ function tokenPool() {
   if (saved) {
     for (var i = 0; i < saved.list.length; i++) add(saved.list[i], 'pool');
   }
-  for (var j = 0; j < SHARED_TOKENS.length; j++) add(SHARED_TOKENS[j], 'shared');
+  // `sample: true`: i token del pool pubblico rispondono solo con 30 secondi
+  // (lo dicono loro). Si sa già, quindi non si sprecano richieste a chiedere
+  // il file brano per brano — restano solo per i casi in cui non c'è altro.
+  for (var j = 0; j < SHARED_TOKENS.length; j++) {
+    var sh = add(SHARED_TOKENS[j], 'shared');
+    if (sh) sh.sample = true;
+  }
   return out;
 }
 
@@ -1749,6 +2226,7 @@ function qobuzCall(path, params, opts) {
 
   var tries = 0;
   var last = null;
+  var secretRefreshed = false;
   for (var i = 0; i < order.length && tries < MAX_TOKEN_TRIES; i++) {
     var entry = order[i];
     if (entry.deadUntil && entry.deadUntil > now()) continue;
@@ -1756,6 +2234,8 @@ function qobuzCall(path, params, opts) {
     if (leftMs() < 1000) break;
     tries++;
 
+    var def = qobuzDefaultApp();
+    var appId = String(entry.appId || def.appId);
     var extra = '';
     var signed = opts && opts.sign ? opts.sign(entry) : null;
     for (var key in params) {
@@ -1765,7 +2245,7 @@ function qobuzCall(path, params, opts) {
     }
     if (signed) extra += '&request_sig=' + encodeURIComponent(signed);
 
-    var url = qobuzApi() + path + '?app_id=' + encodeURIComponent(entry.appId) +
+    var url = qobuzApi() + path + '?app_id=' + encodeURIComponent(appId) +
       '&user_auth_token=' + encodeURIComponent(entry.token) + extra;
     // `cap`: un tetto per le chiamate che non devono mangiarsi il tempo
     // dell'archivio se Qobuz non risponde.
@@ -1800,6 +2280,17 @@ function qobuzCall(path, params, opts) {
         cacheUserApp(entry.token, entry.appId === QOBUZ_APP.appId ? 'other' : 'shared');
       }
       return { status: 200, body: body, entry: entry };
+    }
+    // 400 può voler dire che Qobuz ha cambiato la secret del player: si
+    // rilegge dal bundle (una volta sola) e si riprova lo stesso token.
+    var msg = body && body.message ? String(body.message) : '';
+    if (res.status === 400 && /secret|app.?id/i.test(msg) && !secretRefreshed) {
+      secretRefreshed = true;
+      if (refreshQobuzBundle()) {
+        tries--;
+        i--;
+        continue;
+      }
     }
     // 400/404/5xx: non è colpa del token, inutile insistere con altri.
     return { status: res.status, body: body, entry: entry };
@@ -1853,12 +2344,14 @@ function qobuzAnswer(trackId, wantHiRes) {
   var usable = 0;
   for (var e = 0; e < early.length; e++) {
     if (early[e].deadUntil && early[e].deadUntil > now()) continue;
-    if (previewOnly(early[e].token)) continue;
+    if (early[e].sample || previewOnly(early[e].token)) continue;
     usable++;
   }
   if (early.length && !usable) {
     myspoti.log('qobuz ' + trackId + ': tutti gli account del pool servono solo anteprime');
-    return { ok: false, reason: 'preview' };
+    // `skipped`: non si è nemmeno chiesto il file, quindi non ha senso passare
+    // l'id Qobuz ai relay (parlano Tidal e risponderebbero con un altro brano).
+    return { ok: false, reason: 'preview', skipped: true };
   }
   for (var i = 0; i < formats.length; i++) {
     if (leftMs() < 1500) return { ok: false, reason: previewed ? 'preview' : 'timeout' };
@@ -1877,10 +2370,10 @@ function qobuzAnswer(trackId, wantHiRes) {
       }, {
         // La firma dipende dalla secret dell'app del token che risponde.
         sign: function (entry) {
-          return qobuzSign(ts, trackId, fmt, entry.appSecret);
+          return qobuzSign(ts, trackId, fmt, secretFor(entry));
         },
         // skip riceve la voce del pool, non il token: qui si guarda il token.
-        skip: function (entry) { return previewOnly(entry.token); }
+        skip: function (entry) { return entry.sample === true || previewOnly(entry.token); }
       });
       if (!res) break;
       if (res.status === 200 && res.body && res.body.url) {
@@ -1951,9 +2444,16 @@ function findCandidates(track) {
 
   // Qobuz diretto: la ricerca funziona anche con i token che servono solo
   // anteprime (l'abbonamento conta al momento del file, non del catalogo), ed è
-  // la via più corta: l'id trovato qui lo può suonare anche il relay.
-  if (qobuzEnabled()) {
-    for (var i = 0; i < queries.length && i < MAX_QUERIES; i++) {
+  // la via più corta: l'id trovato qui lo può suonare anche il relay. Se però
+  // *tutti* gli account sono già segnati "solo anteprime" la ricerca Qobuz non
+  // porta da nessuna parte: si va diritti al relay, che ha anche il catalogo
+  // Tidal (Aurix).
+  var qobuzDirect = qobuzEnabled() && qobuzCanServe();
+  if (qobuzDirect) {
+    // Con il relay acceso due ricerche bastano: se il brano non esce fuori, lo
+    // troverà la ricerca del relay (che costa meno di una terza query Qobuz).
+    var maxQ = relayEnabled() ? 2 : MAX_QUERIES;
+    for (var i = 0; i < queries.length && i < maxQ; i++) {
       if (i > 0 && (nearDeadline(5000, 0.3) || leftMs() < 9500)) break;
       addRanked(searchTracks(queries[i]));
       // Abbinamento netto: inutile insistere, ma solo se arriva da una fonte che
@@ -1963,13 +2463,16 @@ function findCandidates(track) {
         var known = providers()[providerOf(all[g].item.id)];
         if (known && known.ok) { good++; break; }
       }
-      if (all.length && all[0].score >= 90 && good) break;
+      // Un ISRC identico è la prova migliore che si possa avere: inutile
+      // cercare ancora. Altrimenti si insiste solo se la fonte ha già servito
+      // audio (una ricerca in più costa mezzo secondo).
+      if (all.length && (all[0].score >= 100 || (all[0].score >= 90 && good))) break;
     }
   }
 
   // Il relay cerca solo se il catalogo non ha dato niente (nessun token, 401):
   // con un id già in mano basta chiedergli il file.
-  if (!all.length && relayEnabled() && !nearDeadline(4000, 0.25) && queries.length) {
+  if ((!all.length || !qobuzDirect) && relayEnabled() && !nearDeadline(4000, 0.25) && queries.length) {
     var relayed = relaySearchTracks(queries[0]);
     var fresh = [];
     for (var r = 0; r < relayed.length; r++) {
@@ -2074,6 +2577,11 @@ function fileLooksRight(url, track) {
   name = fold(name).replace(/\.[a-z0-9]{2,5}$/i, '').replace(/[^a-z0-9]+/g, ' ');
   var words = significantWords(name);
   if (words.length < 2) return true; // nome non parlante ("01.flac", "6-09-73_t19")
+  // «Karaoke», «cover», «DJ edit», «instrumental»: non sono il brano, a meno che
+  // il titolo di Spotify non lo dica già (allora sì: è proprio quella versione).
+  var marca = /\b(karaoke|tribute|cover|remix|dj|instrumental|acapella)\b/;
+  var titolo = ' ' + fold(String((track && track.title) || '')) + ' ';
+  if (marca.test(name) && !marca.test(titolo)) return false;
   var want = significantWords(norm(track && track.title));
   if (!want.length) return true; // titolo fatto solo di numeri e paroline
   var hit = 0;
@@ -2145,7 +2653,12 @@ function orderIds(entry, wantHiResFirst, track, asDownload) {
   for (var m = 0; m < byDuration.length; m++) {
     if (providerUsable(byDuration[m].i)) usable.push(byDuration[m]);
   }
-  if (!usable.length) return []; // niente da provare: si risponde subito
+  if (!usable.length) {
+    // Una fonte può essere segnata "senza audio" perché i token servono solo
+    // anteprime: con il relay acceso lo stesso id può arrivare lo stesso.
+    if (!relayEnabled()) return [];
+    usable = byDuration.slice(0);
+  }
 
   // Ordine dei tentativi: prima le fonti già viste funzionare, poi (se serve)
   // l'alta risoluzione, poi il punteggio di abbinamento.
@@ -2240,11 +2753,15 @@ function streamFor(track, wantHiRes, asDownload) {
       }
       break;
     }
-    if ((out.reason === 'preview' || out.reason === 'error') &&
-        providerOf(ids[i]) === 'qz' && relayEnabled()) {
+    // Con un addon Tidal in salute il passaggio sui relay Qobuz per id è tempo
+    // perso: il loro CDN risponde 429 e il catalogo Tidal ha lo stesso brano.
+    var viaTidal = out.reason === 'preview' && (dashSourceUsable() || out.skipped === true);
+    if ((out.reason === 'preview' || out.reason === 'error') && !viaTidal &&
+        providerOf(ids[i]) === 'qz' && relayEnabled() && relayIdSourceUsable()) {
       // Qobuz risponde "solo anteprime" (o nessun token valido): lo stesso
       // brano può arrivare dal relay, che parla con Qobuz al posto nostro.
       var mm = metaOf[String(ids[i])] || {};
+      // L'id di un candidato Qobuz è "qz:<id>": al relay serve solo il numero.
       var viaRelay = relayAnswer(numericId(ids[i]), hiResFirst,
         mm.q || '', !!asDownload, mm.s || '');
       if (viaRelay.ok && fileLooksRight(viaRelay.answer.url, track) &&
@@ -2274,6 +2791,27 @@ function streamFor(track, wantHiRes, asDownload) {
     // preview, timeout o errore di rete: si prova il candidato successivo
   }
   if (changed) writeCache(key, entry);
+
+  // Il catalogo ufficiale non ha dato un file (anteprime, nessun token): si
+  // cerca lo stesso brano nei relay, con il titolo e l'artista. È la strada che
+  // porta al catalogo Tidal (Aurix), che arriva in FLAC anche 24-bit.
+  if (!answers[key] && relayEnabled() && leftMs() > 8500) {
+    var rel = relaySearchTracks(queriesFor(track)[0]);
+    var best2 = null;
+    for (var r2 = 0; r2 < rel.length; r2++) {
+      var ev2 = evaluate(rel[r2], track);
+      if (ev2 && (!best2 || ev2.score > best2.score)) best2 = ev2;
+    }
+    if (best2 && leftMs() > 4000) {
+      var viaSearch = relayAnswer(relayIdOf(best2.item.id), hiResFirst,
+        best2.item.audioQuality, !!asDownload, best2.item.sourceKey);
+      if (viaSearch.ok && fileLooksRight(viaSearch.answer.url || '', track) &&
+          !tooBigFor(viaSearch.answer, track)) {
+        answers[key] = viaSearch.answer;
+        markProvider(RELAY_PREFIX + '0', true);
+      }
+    }
+  }
 
   // Qobuz non ha dato niente di buono (token morti, anteprime, brano assente):
   // si prova Internet Archive, che non ha bisogno di account.
@@ -2328,12 +2866,17 @@ function hasFeature(name) {
 }
 
 myspoti.provide('audio-source', function (track) {
-  startBudget(13);
+  startBudget(14);
   if (!streamEnabled()) return null;
   try {
     var a = streamFor(track, preferHiRes());
     if (!a) return null;
-    var out = { url: a.url, mimeType: 'audio/flac', codec: 'flac' };
+    // Due modi di consegnare il brano: un file singolo (Qobuz, archivio) o un
+    // manifest DASH con i segmenti (Tidal), che Myspoti suona come un file solo.
+    var out = a.manifest
+      ? { manifest: a.manifest, mimeType: a.mimeType || 'audio/mp4' }
+      : { url: a.url, mimeType: 'audio/flac' };
+    out.codec = 'flac';
     if (a.bitDepth) out.bitDepth = a.bitDepth;
     if (a.sampleRate) out.sampleRate = a.sampleRate;
     // Se il file non dichiara la profondità, meglio dire da dove arriva che
@@ -2357,6 +2900,18 @@ myspoti.provide('download-source', function (track) {
     var cd = String(track.quality || '') === 'cd';
     var a = streamFor(track, !cd, true);
     if (!a) return null;
+    // Tidal arriva come DASH: Myspoti scarica i segmenti e li unisce in un FLAC.
+    if (a.manifest) {
+      var dashFile = {
+        format: 'dash-flac',
+        manifest: a.manifest,
+        provider: PROVIDER,
+        isrcMatched: !!a.isrcMatched
+      };
+      if (a.bitDepth) dashFile.bitDepth = a.bitDepth;
+      if (a.sampleRate) dashFile.sampleRate = a.sampleRate;
+      return [dashFile];
+    }
     var file = {
       url: a.url,
       format: 'flac',
@@ -2483,7 +3038,7 @@ function statusNow() {
 function probeRelaySource(src) {
   var paths = relaySearchPaths(src, 'daft%20punk');
   var out = 'non risponde';
-  var cap = src.shape === 'monochrome' ? 2500 : 4000;
+  var cap = src.cap || (src.shape === 'monochrome' ? 2500 : 4000);
   for (var p = 0; p < paths.length; p++) {
     relayBudget(2);
     var res = relayAt(src.base, paths[p], cap);
@@ -2571,4 +3126,4 @@ myspoti.on('setting', function (e) {
   myspoti.notify('Cache, fonti e token dimenticati');
 });
 
-myspoti.log('Qobuz Hi-Res pronto (' + myspoti.extension.version + ')');
+myspoti.log('Lossless Hi-Res pronto (' + myspoti.extension.version + ')');
