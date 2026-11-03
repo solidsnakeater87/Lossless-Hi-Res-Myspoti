@@ -1,11 +1,11 @@
 {
   "id": "app.eljohnzc.lossless",
   "name": "Qobuz Hi-Res",
-  "version": "4.0.0",
-  "versionCode": 5,
+  "version": "4.3.0",
+  "versionCode": 8,
   "apiVersion": 1,
-  "author": "Qobuz — port Myspoti",
-  "description": "Streaming e download FLAC dal catalogo Qobuz usando il pool di token condivisi, più l'addon BitChord per Internet Archive. I brani di Spotify sono abbinati per titolo, artista, album, durata e ISRC; se un token muore l'estensione passa al successivo, e se nessuno serve audio il brano resta su Spotify. Si possono aggiungere token personali e un indirizzo da cui leggere il pool.",
+  "author": "Qobuz [Heisenbergg] — port Myspoti",
+  "description": "Porta in Myspoti il catalogo Qobuz in FLAC 16/24-bit: prima con il tuo token, il login email e password o il pool condiviso, poi con i relay Qobuz-DL (arcod, instable, qobuz-dl, monochrome) che restituiscono il file intero quando gli account servono solo anteprime, infine con Internet Archive. Il relay si può spegnere o sostituire con i propri indirizzi. Se nessuna fonte ha il brano, resta su Spotify.",
   "category": "tools",
   "tags": [
     "qobuz",
@@ -13,20 +13,26 @@
     "flac",
     "hi-res",
     "24-bit",
-    "token pool"
+    "relay"
   ],
   "media": {
     "hosts": [
       "*.akamaized.net",
       "*.qobuz.com",
+      "arcod.xyz",
+      "*.arcod.xyz",
       "archive.org",
-      "*.archive.org"
+      "*.archive.org",
+      "api.arcod.xyz",
+      "instable.arcod.xyz",
+      "tracks.monochrome.st",
+      "qobuz-dll.foreyou.workers.dev"
     ]
   },
   "actions": [
     {
       "name": "audio.source",
-      "why": "Riproduce in FLAC (16 e 24-bit) i brani del catalogo Qobuz"
+      "why": "Riproduce in FLAC (16 e 24-bit) i brani trovati su Qobuz o nell'Archivio"
     },
     {
       "name": "download.source",
@@ -37,20 +43,24 @@
       "hosts": [
         "www.qobuz.com",
         "*.qobuz.com",
-        "soundfean-music.vercel.app",
-        "*.vercel.app",
+        "arcod.xyz",
+        "*.arcod.xyz",
         "archive.org",
-        "*.archive.org"
+        "*.archive.org",
+        "api.arcod.xyz",
+        "instable.arcod.xyz",
+        "tracks.monochrome.st",
+        "qobuz-dll.foreyou.workers.dev"
       ],
-      "why": "Cerca su Qobuz e sull'addon BitChord, e risolve l'indirizzo del file"
+      "why": "Cerca su Qobuz e Arcod, e risolve l'indirizzo del file su Qobuz, Arcod o Archive"
     },
     {
       "name": "settings.page",
-      "why": "Token personali, pool, hi-res, streaming e tolleranza"
+      "why": "Credenziali, token, pool, hi-res, archivio e tolleranza"
     },
     {
       "name": "storage",
-      "why": "Ricorda abbinamenti, token buoni e token morti"
+      "why": "Ricorda abbinamenti, token buoni e morti, metadati dell'Archivio"
     },
     {
       "name": "notify",
@@ -66,6 +76,20 @@
       "default": ""
     },
     {
+      "key": "qobuzEmail",
+      "type": "text",
+      "label": "Email dell'account Qobuz",
+      "description": "Facoltativa: con email e password l'estensione ottiene da sé un token che si rinnova ogni 12 ore, senza incollare nulla.",
+      "default": ""
+    },
+    {
+      "key": "qobuzPassword",
+      "type": "secret",
+      "label": "Password Qobuz",
+      "description": "Resta sul telefono nelle impostazioni: in rete viaggia solo l'MD5, come vuole l'API di Qobuz. Serve un abbonamento attivo, altrimenti arrivano solo anteprime da 30 s.",
+      "default": ""
+    },
+    {
       "key": "poolUrl",
       "type": "text",
       "label": "Indirizzo del pool di token (avanzato)",
@@ -75,9 +99,37 @@
     {
       "key": "qobuzEnabled",
       "type": "toggle",
-      "label": "Usa Qobuz (pool di token)",
-      "description": "Spento: resta solo l'addon BitChord per Internet Archive. Utile se i token condivisi sono tutti esauriti e non hai un token tuo.",
+      "label": "Usa Qobuz (token e login)",
+      "description": "Spento: resta solo Internet Archive. Utile se i token condivisi sono tutti esauriti e non hai un token tuo.",
       "default": true
+    },
+    {
+      "key": "relayEnabled",
+      "type": "toggle",
+      "label": "Usa i relay Qobuz",
+      "description": "Il catalogo Qobuz lo servono servizi pubblici quando i token non bastano (arcod, instable, qobuz-dl, monochrome): è il ripiego che usano le estensioni Echo. Spento, restano solo i tuoi token e Internet Archive.",
+      "default": true
+    },
+    {
+      "key": "relayApi",
+      "type": "text",
+      "label": "Indirizzo del relay (avanzato)",
+      "description": "Vuoto: i quattro servizi predefiniti. Altrimenti la tua lista, separata da virgola: si prova il primo che risponde. Il prefisso mono: davanti a un indirizzo dice che parla la forma monochrome (/search/tracks e il file su /track/<id>).",
+      "default": ""
+    },
+    {
+      "key": "iaLoose",
+      "type": "toggle",
+      "label": "Accetta altre esecuzioni dall'Archivio",
+      "description": "L'Archivio conserva per lo più registrazioni d'epoca, più corte o più lunghe del brano di Spotify: acceso si accetta la stessa opera anche con durata diversa; spento si accettano solo durate quasi uguali.",
+      "default": true
+    },
+    {
+      "key": "iaApi",
+      "type": "text",
+      "label": "API Internet Archive (avanzato)",
+      "description": "Vuoto: https://archive.org. Serve solo per uno specchio o per le prove in locale.",
+      "default": ""
     },
     {
       "key": "streamEnabled",
@@ -106,10 +158,16 @@
       "default": "Normale (±6 s)"
     },
     {
+      "key": "testSources",
+      "type": "button",
+      "label": "Prova le fonti",
+      "description": "Una richiesta per fonte e un riassunto: dice quale relay risponde, se Qobuz dà file interi e se l'Archivio ha FLAC."
+    },
+    {
       "key": "clearCache",
       "type": "button",
       "label": "Svuota cache e token",
-      "description": "Dimentica brani abbinati, token rifiutati e pool letto da un indirizzo."
+      "description": "Dimentica brani abbinati, token rifiutati o da anteprima, e il pool letto da un indirizzo."
     },
     {
       "key": "qobuzApi",
@@ -120,13 +178,13 @@
     }
   ],
   "minAppVersion": "2.0.0",
-  "changelog": "4.0.0 — il catalogo Qobuz arriva dall'API ufficiale con un pool di token condivisi: ricerca su Qobuz, abbinamento con ISRC, getFileUrl firmato in MD5 per il FLAC 16/24-bit, rotazione automatica dei token e token rifiutati ricordati. L'addon BitChord resta come seconda fonte per Internet Archive. Nuovi campi per token personali e per un pool da un indirizzo. I token condivisi possono esaurirsi: in quel caso si resta su Spotify.",
+  "changelog": "4.3.0 — più fonti invece di una: i relay elencati dall'estensione Echo Music (arcod, instable, qobuz-dl, monochrome) provati in ordine, con la memoria di quello che risponde — i servizi che tacciono finiscono in fondo, i 429 si aspettano come chiede il servizio. Si può scrivere la propria lista di indirizzi; il prefisso mono: dice che un servizio parla la forma monochrome (/search/tracks e il file su /track/<id>). Lo stato non spegne più l'estensione quando una sonda non conclude: prima bastava un relay lento perché Myspoti la mettesse in pausa e ogni brano tornasse su Spotify.",
   "welcome": {
-    "message": "Questa versione suona il catalogo Qobuz (FLAC 16 e 24-bit) con un pool di token condivisi, e in più l'addon BitChord per Internet Archive. Se i token condivisi smettono di funzionare, aggiungi il tuo user_auth_token nelle impostazioni: l'estensione prova prima i tuoi.",
+    "message": "Questa versione suona il catalogo Qobuz in FLAC 16/24-bit: prima con il tuo token o le tue credenziali, poi con il relay arcod.xyz se gli account del pool servono solo anteprime; per i brani di pubblico dominio passa da Internet Archive. Se un brano resta su Spotify, nessuna delle tre fonti ce l'ha.",
     "steps": [
       "In Impostazioni ▸ Estensioni ▸ Qobuz Hi-Res scegli se usarlo in streaming.",
-      "Se i brani restano su Spotify, incolla un token Qobuz personale nel primo campo.",
-      "I brani che l'estensione sa servire arrivano in FLAC; gli altri restano su Spotify."
+      "Il relay è acceso di default e non serve alcun account: spegnilo se preferisci solo Qobuz diretto e Internet Archive.",
+      "Se vuoi la massima qualità e nessun terzo in mezzo, incolla un token personale o le credenziali di un account Studio."
     ]
   }
 }
