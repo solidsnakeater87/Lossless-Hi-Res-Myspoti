@@ -12,16 +12,101 @@ brano Spotify ──▶ abbinamento (titolo, artista, album, durata, ISRC)
                     │
    ┌────────────────┼──────────────────────────┐
    ▼                ▼                          ▼
- Qobuz ufficiale   relay                     Internet Archive
- token/login/pool  Aurix   → Tidal (DASH)     advancedsearch + metadata
-   │               arcod   → Qobuz            title:(…) AND format:(FLAC)
- /track/search     instable→ Qobuz            /download/<item>/<file>.flac
+ Qobuz ufficiale   Tidal (token)  addon       Internet Archive
+ token/login/pool  /v1/search     Bitchord→ Qobuz (FLAC)   advancedsearch + metadata
+   │               ISRC, 0,2-0,5 s Eljohnzc→ Tidal (DASH)   title:(…) AND format:(FLAC)
+ /track/search                    Aurix   → Tidal (DASH)   /download/<item>/<file>.flac
+ /track/getFileUrl
  /track/getFileUrl /search, /stream/<id>       (controllo nome + peso)
  (firma MD5)       (file intero o manifest)
    └────────────────┴──────────────────────────┘
                     ▼
    Myspoti: audio-source (riproduzione) · download-source (file .flac)
 ```
+
+## Cosa è cambiato nella 4.9.0
+
+- **Il tuo token Qobuz è dentro e funziona davvero.** L'account è **Studio (US)** e `getFileUrl`
+  restituisce il **file intero**, non i 30 secondi: verificato a mano con `Range` + `STREAMINFO`,
+  *Get Lucky* 24-bit / 88,2 kHz, **133.376.529 byte**, 369,6 s.
+  Risultato sui dieci brani di prova: il mainstream ora arriva **dritto da Qobuz in 0,47-0,98 s**
+  (prima passava da Bitchord in 0,6-1,5 s), il download è lo stesso file da 127 MB.
+- **La firma dipende dall'app.** I token «nuova versione» vanno firmati con `312369995` e la sua
+  secret: con la coppia del player web Qobuz risponde `Invalid Request Signature`, e il token sembra
+  morto quando invece è buono. Adesso ogni token personale si prova con **tre coppie** (player,
+  `312369995`, `712109809`) e si ricorda quella che ha funzionato, così i brani dopo non pagano
+  tentativi in più.
+- **Un `401` non uccide più il token.** Prima il primo rifiuto lo segnava «morto» per sei ore, anche
+  se era solo la coppia app sbagliata. Ora si prova l'altra coppia e lo si dichiara morto solo se
+  nessuna lo accetta.
+- **Il pool non perdeva le varianti:** la deduplica era per token, quindi le tre coppie si
+  sovrascrivevano e restava solo la prima (quella sbagliata). La chiave ora è token + app + secret.
+- **Un tetto per chiamata, non per tentativo.** Con tre coppie in pool, un Qobuz lento costava tre
+  timeout da 6 s e l'Archivio restava senza tempo (era ricomparso un `null` su *Clair de lune*):
+  ora 6 s in tutto, e un timeout non si riprova con altre coppie.
+- **`Prova le fonti` dice il piano dell'account**: `Qobuz: studio fino al 2026-10-31 (disdetto) ·
+  Qobuz file: ok · Tidal: ok · HI_RES fino al 2027-01-03 · Archivio: file ok · …` (6,6 s).
+
+## Cosa è cambiato nella 4.8.0
+
+- **Il tuo token Tidal è dentro.** L'account è **Premium attivo** (fino al 3 gennaio 2027, hi-res
+  sì): il token si scambia da solo con un access token e serve alla **ricerca Tidal di prima mano** —
+  `api.tidal.com/v1/search`, **0,2-0,5 s** contro i 3-5 s degli addon, e i risultati arrivano con
+  l'**ISRC**, che è ciò che fa azzeccare il brano giusto. Sulla prova di dieci brani: **0 su 10
+  senza fonte** (prima 1-2), e i tempi mainstream quasi dimezzati.
+- **La riproduzione resta agli addon**, e non per pigrizia: chiedendo il *file* con questo token Tidal
+  risponde `401 · Asset is not ready for playback` (subStatus 4005) — succede ai token rinnovati da
+  un'app diversa da quella che li ha emessi, anche con l'abbonamento attivo. Gli id però sono gli
+  stessi (catalogo Tidal), quindi ricerca di prima mano + file dall'addon funziona benissimo.
+  Se l'abbonamento scade o il token viene revocato, la ricerca torna agli addon da sola.
+- **Via le fonti morte.** `arcod.xyz` e `instable.arcod.xyz` sono uscite: la prima rispondeva `400`
+  dopo 11 s, la seconda non rispondeva affatto. Erano un timeout a ogni brano. Se un giorno tornano,
+  si rimettono in *Indirizzo del relay*.
+- **Via le anteprime da 30 secondi come fonte.** I token del pool pubblico (`sample: true`) non
+  vengono più interrogati per il file: né per l'audio, né per "provare e vedere". Restano solo per la
+  *ricerca* Qobuz, che è l'unica cosa che sanno fare — ed è quella che dà gli id a Bitchord. Se hai un
+  token tuo o email/password, quello passa davanti e serve il file intero.
+- **`Prova le fonti` è più corta**: 11 s invece di 21, e mostra anche `Tidal (token): ok · HI_RES fino
+  al …`.
+
+## Cosa è cambiato nella 4.7.1
+
+- **`audio-source: not-found` era troppo frequente.** Su dodici brani ne restavano senza fonte
+  cinque; ora uno — e quello è un brano che il catalogo davvero non ha. Tre le cause, tutte corrette:
+  1. **La durata dichiarata faceva perdere l'edizione giusta.** Per *Blu celeste* titolo, artista e
+     album erano identici, ma Tidal dichiarava 206 s contro i 190 s di Spotify: 16 s di scarto, oltre
+     la tolleranza di 6 s, e il brano finiva «non trovato». Ora, quando titolo e artista sono quelli,
+     la differenza dichiarata non conta (fino al 18% o 45 s, quello che viene prima). Restano fuori
+     le versioni che si annunciano nel titolo (`remix`, `live`, `acoustic`, `extended`, …) e i mix
+     sproporzionati: un *Get Lucky* da 632 s viene ancora scartato.
+  2. **Un refuso nel catalogo bastava per perdere il brano** («Ragamuffin» per «Raggamuffin»). Il
+     titolo si confronta anche lettera per lettera.
+  3. **L'addon Qobuz poteva mangiarsi il tempo della ricerca Tidal**: due tentativi da 2,5 s e poi il
+     ripiego non partiva più (servivano 8,5 s liberi su 14). Adesso ogni tappa riceve un tetto
+     proporzionato al tempo che resta e il ripiego ha sempre il suo spazio.
+- **`bitchord-hires-addon.de.deplexo.com` non era dichiarato fra gli host del manifest**: Myspoti
+  può rifiutare le richieste a un host non dichiarato, e su un telefono vero l'addon sarebbe stato
+  irraggiungibile anche se dal computer funzionava. Aggiunto in `media.hosts`.
+
+## Cosa è cambiato nella 4.7.0
+
+- **Fonte Qobuz nuova: l'addon Bitchord** (`bitchord-hires-addon.de.deplexo.com`). Dietro c'è un
+  account Qobuz con abbonamento, e risponde `/stream/<id Qobuz>` con l'**URL di un FLAC intero**
+  (`fmt=7`, anche 24/192): verificato a mano, il file è `fLaC` con la sua durata vera (228 s,
+  165 MB per *Take On Me*), non i 30 secondi che danno i nostri token.
+  Nella prova dal vivo: **Get Lucky 24/88.2**, **Bohemian Rhapsody 24/96**,
+  **Take On Me 24/192**, tutti in **0,5–1,3 s** — prima arrivavano da Tidal in 16-bit.
+- **Non si usa la sua ricerca.** Ci mette 11 s. Gli id Qobuz li conosce già la nostra ricerca
+  (`/track/search` con i token del pool, che funziona anche quando servono solo anteprime): all'addon
+  si chiede solo il file di un id che abbiamo in mano. Zero richieste sprecate.
+- **Se l'addon tace si perde poco**: 2,5 s di tetto e un secondo tentativo immediato (ogni tanto si
+  impunta su una richiesta e risponde a quella dopo in 0,3 s); dopo, il brano passa agli addon Tidal.
+  Un minuto di castigo se non risponde, non tre: quando c'è, è la fonte migliore.
+- **Le proprietà delle fonti non si perdono più.** `relaySources()` copiava solo `key`/`base`/`shape`:
+  tetto di tempo, nomi della qualità, `plain` e `catalog` sparivano prima di arrivare a chi li usa —
+  è il motivo per cui gli addon si comportavano in modo incoerente fra un brano e l'altro.
+- **Il formato dichiarato dall'addon vince sul catalogo**: la qualità mostrata è quella del file
+  (`24-bit / 192 kHz`), non una stima dal titolo.
 
 ## Cosa è cambiato nella 4.6.1
 
@@ -125,7 +210,7 @@ l'estensione quando una sonda non conclude, pulsante **Prova le fonti**, tetto a
 | **Download in FLAC** | hook `download-source`: `.flac` vero (o `dash-flac`), con la dimensione per la barra |
 | **Hi-res quando c'è** | chiede il formato Hi-Res e ripiega da solo sul formato dell'album |
 | **Niente anteprime** | i token con `sample: true` vengono messi da parte, non serviti |
-| **Tre strade** | Qobuz (token, login, pool), relay (Eljohnzc, Aurix, arcod, instable), Internet Archive |
+| **Tre strade** | Qobuz (token, login, pool, Bitchord), Tidal (token di ricerca, Eljohnzc, Aurix), Internet Archive |
 | **Stato prudente** | `status` non spegne l'estensione se la sonda non conclude |
 | **Cache** | abbinamenti 14 giorni, metadati dell'Archivio 14 giorni, token senza abbonamento 6 ore, token morti 20 minuti, indirizzi del relay 8 minuti |
 
@@ -133,7 +218,7 @@ l'estensione quando una sonda non conclude, pulsante **Prova le fonti**, tetto a
 
 Serve Myspoti **2.0.0 o successiva** (per Aurix, una versione che dichiari `audio.manifest`).
 
-**1. Dal file.** Scarica [`extension.zip`](extension.zip) (o `app.eljohnzc.lossless-4.6.1.zip`, è lo
+**1. Dal file.** Scarica [`extension.zip`](extension.zip) (o `app.eljohnzc.lossless-4.9.0.zip`, è lo
 stesso file), copialo sul telefono e installalo da *Impostazioni ▸ Estensioni ▸ Installa da un file*.
 Sopra la 4.5.0 Myspoti mostra **"Update needs your OK"** con le differenze (stesso `id`): si accetta
 una volta e le impostazioni restano.
@@ -142,7 +227,7 @@ una volta e le impostazioni restano.
 in *Installa da un indirizzo*.
 
 **3. Dal negozio.** Pubblica questo repository su GitHub con il topic **`myspoti-extension`** e una
-release con `extension.zip` allegato (`git tag v4.6.1 && git push origin v4.6.1`; il workflow in
+release con `extension.zip` allegato (`git tag v4.9.0 && git push origin v4.9.0`; il workflow in
 `.github/workflows/release.yml` controlla, compila e allega il pacchetto).
 
 Poi: **Impostazioni ▸ Estensioni ▸ Lossless Hi-Res** e una playlist in play. Nel player, sotto il
@@ -157,7 +242,8 @@ dispositivo di uscita, compare la qualità del file servito (es. `24-BIT · 96 k
 | **Password Qobuz** | vuoto | resta sul telefono; in rete viaggia solo l'MD5. Serve un abbonamento attivo |
 | **Indirizzo del pool di token** (avanzato) | vuoto | URL che restituisce `[{token, app_id, app_secret}]`, riletto ogni 6 ore |
 | **Usa Qobuz (token e login)** | attivo | spento: si salta l'API ufficiale e si va ai relay |
-| **Usa i relay (Eljohnzc, Aurix, arcod, instable)** | attivo | spento: nessun servizio esterno, resta solo Internet Archive |
+| **Usa i relay (Eljohnzc, Aurix, Bitchord)** | attivo | spento: nessun servizio esterno, resta Internet Archive |
+| **Token Tidal (account personale)** | il tuo | ricerca Tidal di prima mano (0,2-0,5 s, ISRC compresi) e controllo dell'abbonamento |
 | **Indirizzo del relay** (avanzato) | vuoto = i quattro predefiniti | la tua lista separata da virgola, provata in ordine; `mono:` = forma monochrome, `dash:` = addon con manifest |
 | **Accetta altre esecuzioni dall'Archivio** | attivo | accetta la stessa opera anche con durata diversa |
 | **API Internet Archive** (avanzato) | vuoto = `archive.org` | serve per uno specchio o per le prove in locale |
@@ -177,14 +263,16 @@ dispositivo di uscita, compare la qualità del file servito (es. `24-BIT · 96 k
   perché `user.credential.parameters` è vuoto. Il pool condiviso scritto qui è **tutto in anteprima**
   (verificato il 3/11/2026): per Qobuz a piena qualità serve un **tuo** account Studio (anche in
   prova) o un tuo `user_auth_token` — con quello i relay non vengono nemmeno interrogati.
-- **Aurix ha bisogno di `audio.manifest`.** Se la tua Myspoti è più vecchia, l'addon viene saltato e
-  restano arcod, instable e l'Archivio. Il manifest contiene indirizzi su `*.audio.tidal.com`: sono
-  dichiarati fra gli host dell'estensione, quindi non serve altro.
-- **I relay sono servizi di terzi.** `arcod.xyz`, `instable.arcod.xyz` e l'addon Aurix non sono
-  Qobuz e non sono Myspoti: possono cambiare indirizzo, rispondere `429` o chiudere. Il CDN dei file
-  di arcod (`api.arcod.xyz`) risponde `429 Too many simultaneous streams` quando ha già un flusso
-  aperto per lo stesso token: misurato il 3/11/2026, e per questo prima di consegnare un indirizzo
-  l'estensione lo prova e, se non si apre, passa a un'altra fonte.
+- **Gli addon Tidal hanno bisogno di `audio.manifest`.** Se la tua Myspoti è più vecchia, vengono
+  saltati e restano Bitchord, la ricerca Tidal con il token e l'Archivio. Il manifest contiene
+  indirizzi su `*.audio.tidal.com`: sono dichiarati fra gli host dell'estensione, quindi non serve
+  altro.
+- **Gli addon sono servizi di terzi.** `eljohnzc-addon.de.deplexo.com`,
+  `bitchord-hires-addon.de.deplexo.com` e `addon-2.aurix.dpdns.org` non sono Qobuz né Myspoti:
+  possono cambiare indirizzo, rispondere `429` o chiudere, e ogni tanto non rispondono per qualche
+  secondo (l'estensione riprova una volta e poi passa avanti). Il CDN dei loro file risponde
+  `429 Too many simultaneous streams` quando ha già un flusso aperto: per questo, prima di consegnare
+  un indirizzo, l'estensione lo prova e se non si apre passa a un'altra fonte.
 - **Un ascolto alla volta.** Se il player si ferma su un brano e riparte con il successivo, aspetta
   qualche secondo: l'indirizzo appena chiesto potrebbe essere ancora «occupato» lato CDN.
 - **L'indirizzo del file scade.** Il relay firma un URL valido circa un quarto d'ora (verificato: 206 a

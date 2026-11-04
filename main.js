@@ -1,5 +1,5 @@
 /*
- * Lossless Hi-Res — estensione per Myspoti (API 1), versione 4.6.1.
+ * Lossless Hi-Res — estensione per Myspoti (API 1), versione 4.9.0.
  * Stesso id dal 4.0.0: si installa sopra la versione precedente.
  * ---------------------------------------------------------------------------
  * Le fonti, nell'ordine in cui si provano:
@@ -37,6 +37,132 @@
 
 var PROVIDER = 'Lossless Hi-Res';
 
+/* --- Tidal, interrogato direttamente con il token dell'account ------------
+ * Il token è un «refresh token»: si scambia con un access token (4 ore) e si
+ * tiene in storage. Serve per la ricerca di prima mano — risponde in 0,2-0,5 s
+ * invece dei 3-5 s degli addon e porta l'ISRC, che è quello che fa azzeccare il
+ * brano giusto — e per sapere se l'abbonamento è attivo.
+ * La riproduzione resta agli addon: per una richiesta di *file* Tidal risponde
+ * «Asset is not ready for playback» a un token rinnovato da un'altra app (il
+ * caso di questo), anche con l'abbonamento attivo.
+ */
+var TIDAL_AUTH = 'https://auth.tidal.com/v1/oauth2/token';
+var TIDAL_API = 'https://api.tidal.com/v1';
+var TIDAL_CLIENT = { id: 'zU4XHVVkc2tDPo4t', secret: 'VJ8pQggXLhLy0WHahglCD4N1nAkkXQtGYpq2HrHD7H1' };
+
+/** Il refresh token scritto nelle impostazioni, o ''. */
+function tidalToken() {
+  var t = trim(String(setting('tidalToken', '') || ''));
+  return t.length >= 40 ? t : '';
+}
+
+/** GET con Bearer: { status, body } oppure null. */
+function tidalGet(url, token, timeoutMs) {
+  var r = null;
+  try {
+    r = myspoti.http.request({
+      url: url, method: 'GET',
+      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/json' },
+      timeout: timeoutFor(timeoutMs || 3000)
+    });
+  } catch (e) {
+    myspoti.log('tidal: ' + e);
+    return null;
+  }
+  if (!r) return null;
+  var parsed = null;
+  try {
+    parsed = JSON.parse(r.body || '');
+  } catch (e2) {
+    parsed = null;
+  }
+  return { status: r.status || 0, body: parsed };
+}
+
+/** Lo stato dell'account, o null. In storage 4 ore (quanto dura l'access token). */
+function tidalSession() {
+  var rt = tidalToken();
+  if (!rt) return null;
+  var saved = myspoti.storage.get('tidal_access');
+  if (saved && saved.rt === rt && saved.token && saved.exp && saved.exp - now() > 5 * 60000) return saved;
+  var bad = myspoti.storage.get('tidal_bad');
+  if (bad && bad.rt === rt && now() - (bad.at || 0) < 30 * 60000) return null;
+  var res = httpPostForm(TIDAL_AUTH, {
+    grant_type: 'refresh_token',
+    refresh_token: rt,
+    client_id: TIDAL_CLIENT.id,
+    client_secret: TIDAL_CLIENT.secret
+  }, 6000);
+  var body = res && res.body ? res.body : null;
+  if (!body || res.status !== 200 || !body.access_token) {
+    var why = body && body.error ? String(body.error) : ('HTTP ' + (res ? res.status : '?'));
+    myspoti.log('tidal: token non rinnovato — ' + why);
+    // Un token scaduto non deve costare una richiesta a ogni brano.
+    try {
+      myspoti.storage.set('tidal_bad', { rt: rt, at: now() });
+    } catch (e) {
+      myspoti.log('storage piena: ' + e);
+    }
+    return null;
+  }
+  var user = body.user || {};
+  var one = {
+    rt: rt,
+    token: String(body.access_token),
+    exp: now() + (parseInt(body.expires_in, 10) || 14400) * 1000,
+    country: user.countryCode ? String(user.countryCode) : 'US',
+    user: user.userId || 0,
+    plan: ''
+  };
+  try {
+    myspoti.storage.set('tidal_access', one);
+    myspoti.storage.remove('tidal_bad');
+  } catch (e) {
+    myspoti.log('storage piena: ' + e);
+  }
+  myspoti.log('tidal: token rinnovato (' + one.country + ', utente ' + one.user + ')');
+  return one;
+}
+
+/** La ricerca Tidal di prima mano, nella forma dei candidati del relay. */
+function tidalSearchTracks(query) {
+  if (!trim(query)) return [];
+  var sess = tidalSession();
+  if (!sess) return [];
+  var url = TIDAL_API + '/search?query=' + encodeURIComponent(query) +
+    '&limit=25&types=TRACKS&countryCode=' + encodeURIComponent(sess.country || 'US');
+  var res = tidalGet(url, sess.token, 2500);
+  if (!res || res.status !== 200 || !res.body || !res.body.tracks) return [];
+  var items = res.body.tracks.items || [];
+  var out = [];
+  for (var i = 0; i < items.length; i++) {
+    var t = items[i];
+    if (!t || t.id === undefined || t.id === null) continue;
+    var names = [];
+    if (t.artists && t.artists.length) {
+      for (var k = 0; k < t.artists.length; k++) {
+        if (t.artists[k] && t.artists[k].name) names.push(String(t.artists[k].name));
+      }
+    }
+    var q = String(t.audioQuality || '');
+    var hi = /HI_RES/i.test(q);
+    out.push({
+      id: RELAY_PREFIX + 'tidal:' + t.id,
+      title: trim(String(t.title == null ? '' : t.title)),
+      artist: names.join(', '),
+      album: t.album && t.album.title ? String(t.album.title) : '',
+      duration: t.duration,
+      isrc: t.isrc || '',
+      audioQuality: hi ? '24-bit / 44.1 kHz' : (/LOSSLESS/i.test(q) ? '16-bit / 44.1 kHz' : ''),
+      hires: hi,
+      sourceKey: 'tidal',
+      source: 'Tidal'
+    });
+  }
+  if (out.length) myspoti.log('tidal: ' + out.length + ' risultati dal catalogo (ISRC compresi)');
+  return out;
+}
+
 /* --- Internet Archive, interrogato direttamente (niente addon di terzi) --- */
 var IA = 'https://archive.org';
 var IA_PREFIX = 'ia:';
@@ -66,7 +192,18 @@ var SHARED_TOKENS = [
   { token: '7W1P_bimeouwcLTVKjV1UGr_MJp4psetcljd1awOU9QksKi9AmHKvf6MtIdvzP0HuLLENvmM2pJErjSuE_3N3g', appId: '312369995', appSecret: 'e79f8b9be485692b0e5f9dd895826368' },
   { token: 'O97vZDyvXmYhLPfbn07D8Y4SFN02DyRrYb3Pe3rQXWnw1HosDl9vfQTGRQEo2zkkcwP9ADc3L20nYNaI0l7E4g', appId: '312369995', appSecret: 'e79f8b9be485692b0e5f9dd895826368' }
 ];
+/*
+ * Token di account veri, scritti qui dentro su richiesta dell'utente: hanno
+ * un abbonamento (Studio / Premium) e quindi restituiscono il file intero, non
+ * i 30 secondi. Ognuno va firmato con l'app che l'ha emesso — con la coppia
+ * sbagliata Qobuz risponde «Invalid Request Signature».
+ */
+var ACCOUNT_TOKENS = [
+  { token: 'JGR6Sd2IYC86-O-jm24JQPZR4-heGMmXjNND6RBo9idJDIBecJZ687c9DQ6D5jAc7IugtidTjegE6hlqdFo_uQ',
+    appId: '312369995', appSecret: 'e79f8b9be485692b0e5f9dd895826368', label: 'Qobuz Studio (US)' }
+];
 var QOBUZ_APP = { appId: '798273057', appSecret: 'abb21364945c0583309667d13ca3d93a' };
+var QOBUZ_TOKEN_APP = { appId: '312369995', appSecret: 'e79f8b9be485692b0e5f9dd895826368' };
 var QOBUZ_LOGIN_APP = '712109809'; // l'unica app che accetta user/login con email e password
 var QOBUZ_BUNDLE_TTL_MS = 24 * 60 * 60 * 1000; // la secret del player cambia a ogni versione
 
@@ -378,6 +515,25 @@ function tokensOf(s) {
 }
 
 /** Quanto due testi condividono le parole: 0 (niente) … 1 (le stesse). */
+/** 0 … 1: quanto due stringhe si somigliano lettera per lettera (Levenshtein). */
+function similar(a, b) {
+  if (a === b) return 1;
+  var la = a.length, lb = b.length;
+  if (!la || !lb) return 0;
+  if (Math.abs(la - lb) > 6) return 0;
+  var prev = [], cur = [], i, j;
+  for (j = 0; j <= lb; j++) prev[j] = j;
+  for (i = 1; i <= la; i++) {
+    cur[0] = i;
+    for (j = 1; j <= lb; j++) {
+      var cost = a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+    }
+    for (j = 0; j <= lb; j++) prev[j] = cur[j];
+  }
+  return 1 - prev[lb] / Math.max(la, lb);
+}
+
 function overlap(a, b) {
   var ta = tokensOf(a);
   var tb = tokensOf(b);
@@ -487,9 +643,23 @@ function durationDelta(candidate, track) {
   return Math.abs(want - got);
 }
 
-function durationOk(candidate, track) {
+function durationOk(candidate, track, tScore, aScore) {
   var delta = durationDelta(candidate, track);
-  return delta === Infinity || delta <= toleranceSec();
+  if (delta === Infinity) return true;
+  var limit = toleranceSec();
+  // Titolo (quasi) identico e stesso artista: quella è l'edizione, anche se il
+  // servizio dichiara una durata diversa — Tidal e Spotify non misurano sempre
+  // la stessa cosa, e le stampe master cambiano di qualche secondo. Resta
+  // escluso ciò che nel titolo si annuncia come un'altra versione.
+  var extra = /\b(remix|live|edit|version|acoustic|instrumental|karaoke|demo|extended|radio|slowed|sped up)\b/i
+    .test(String(candidate && candidate.title != null ? candidate.title : ''));
+  if (tScore >= 44 && aScore >= 20 && !extra) {
+    var want = trackDurationSec(track);
+    var wide = tScore >= 60 ? Math.round(want * 0.18) : Math.round(want * 0.15);
+    if (wide > 45) wide = 45;
+    if (wide > limit) limit = wide;
+  }
+  return delta <= limit;
 }
 
 /** -30 … 22: la durata del candidato rispetto a quella del brano. */
@@ -511,7 +681,13 @@ function titleScore(candidate, track) {
   if (want === got) return 60;
   if (got.indexOf(want) === 0 || want.indexOf(got) === 0) return 46;
   if (got.indexOf(want) >= 0 || want.indexOf(got) >= 0) return 34;
-  return Math.round(32 * overlap(want, got));
+  var o = Math.round(32 * overlap(want, got));
+  // Un refuso del catalogo («Ragamuffin» per «Raggamuffin») non deve far
+  // perdere il brano: conta anche la somiglianza lettera per lettera.
+  var sim = similar(want, got);
+  if (sim >= 0.88) return Math.max(o, 44);
+  if (sim >= 0.8) return Math.max(o, 32);
+  return o;
 }
 
 /** 0 … 30: l'artista del candidato è uno degli artisti del brano. */
@@ -642,7 +818,7 @@ function evaluateOne(c, track, hiResBias) {
   var a = artistScore(c, track);
   var alb = albumScore(c, track);
   var delta = durationDelta(c, track);
-  var ok = durationOk(c, track);
+  var ok = durationOk(c, track, t, a);
   var foreign = isForeign(c.title) || isForeign(c.artist);
 
   var accept = false;
@@ -730,8 +906,16 @@ var RELAY_SOURCES = [
     q: ['hires', 'lossless'], plain: true, cap: 4000, catalog: 'tidal' },
   { key: 'aurix', base: 'https://addon-2.aurix.dpdns.org/free_rLnRPnC6oZF5gvAx', shape: 'dash',
     catalog: 'tidal' },
-  { key: 'arcod', base: 'https://arcod.xyz', shape: 'arcod' },
-  { key: 'instable', base: 'https://instable.arcod.xyz', shape: 'arcod' }
+  // Bitchord: addon col **catalogo Qobuz** e un account che paga davvero.
+  // Risponde /stream/<id Qobuz> con l'URL di un FLAC intero (fmt 7, 24-bit):
+  // è la strada che prima mancava, perché i nostri token servono solo 30 s.
+  // La sua ricerca costa ~11 s, quindi non si usa: gli id Qobuz li conosce già
+  // la nostra ricerca, e qui si chiede solo il file di un id che si ha in mano.
+  { key: 'bitchord', base: 'https://bitchord-hires-addon.de.deplexo.com', shape: 'bitchord',
+    q: ['lossless', 'high'], cap: 2500, catalog: 'qobuz', noSearch: true },
+  // Punto. arcod.xyz e instable.arcod.xyz sono uscite nella 4.8.0: la prima
+  // risponde 400 dopo undici secondi, la seconda non risponde affatto — erano
+  // solo un timeout in più a ogni brano.
 ];
 
 /**
@@ -743,8 +927,14 @@ function relaySources() {
   var raw = trim(String(setting('relayApi', '') || ''));
   var out = [];
   if (!raw) {
+    // Tutte le proprietà, non solo key/base/shape: `q`, `cap`, `plain`,
+    // `catalog`, `noSearch` sono quelle che fanno funzionare gli addon.
     for (var i = 0; i < RELAY_SOURCES.length; i++) {
-      out.push({ key: RELAY_SOURCES[i].key, base: RELAY_SOURCES[i].base, shape: RELAY_SOURCES[i].shape });
+      var one = {};
+      for (var k in RELAY_SOURCES[i]) {
+        if (RELAY_SOURCES[i].hasOwnProperty(k)) one[k] = RELAY_SOURCES[i][k];
+      }
+      out.push(one);
     }
     return out;
   }
@@ -1005,6 +1195,60 @@ function relayStreamPaths(src, trackId, quality) {
 }
 
 /**
+ * L'URL di un FLAC Qobuz **intero** per un id numerico, chiesto a un addon che
+ * ha un account con abbonamento (Bitchord). La nostra API, con i token del
+ * pool, risponde «sample: true» — trenta secondi: qui invece arriva il file.
+ * La forma è quella degli addon Tidal, ma al posto del manifest c'è l'URL.
+ */
+function relayQobuzUrl(src, trackId, wantHiRes) {
+  // Solo gli addon di questa forma: un relay qualsiasi non deve ricevere un id
+  // Qobuz e rispondere con un'altra cosa (è successo: 24-bit inventati).
+  if (!src || src.shape !== 'bitchord') return null;
+  var bare = String(trackId).replace(/^[A-Za-z0-9_-]+:/, '');
+  if (!/^\d+$/.test(bare)) return null;
+  if (relayTriesLeft <= 0) relayBudget(4);
+  var names = src.q && src.q.length ? src.q : ['lossless', 'high'];
+  var hi = names[0];
+  var lo = names[1] || names[0];
+  var qualities = wantHiRes ? [hi, lo] : [lo, hi];
+  // Via solo se, dopo un tentativo, resta spazio per la ricerca Tidal: è lei
+  // che non fallisce mai per colpa di un host.
+  var cap = src.cap || 4000;
+  var room = leftMs() - 5500;
+  if (room < 1500) return null;
+  if (room < cap) cap = room;
+  var lastStatus = 0;
+  for (var i = 0; i < qualities.length; i++) {
+    if (leftMs() < 1500) return null;
+    // Questo addon, ogni tanto, si impunta su una richiesta e risponde a quella
+    // dopo in tre decimi di secondo: un secondo tentativo costa poco e vale la
+    // pena (è l'unica fonte che dà il file Qobuz intero).
+    var res = null;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      res = relayAt(src.base, '/stream/' + encodeURIComponent(bare) +
+        '?quality=' + qualities[i], cap);
+      if (res) break;
+      if (leftMs() < 6500) return null;
+    }
+    // Se non risponde nemmeno al secondo colpo, la seconda qualità non
+    // cambierebbe niente: il brano passa agli addon Tidal.
+    if (!res) break;
+    lastStatus = res.status;
+    var b = res.body || {};
+    if (b.encrypted === true) continue;
+    var u = typeof b.url === 'string' ? b.url : '';
+    // Solo https, con l'eccezione di un servizio di prova in locale.
+    var protoOk = /^https:\/\//i.test(u) ||
+      /^http:\/\/(127\.0\.0\.1|localhost)(?::|\/)/i.test(u);
+    if (!protoOk) continue;
+    if (b.format && String(b.format).toLowerCase() !== 'flac') continue;
+    return { url: u, quality: qualities[i], base: src.base, status: res.status,
+      bitDepth: parseInt(b.bitDepth, 10) || 0, sampleRate: parseInt(b.sampleRate, 10) || 0 };
+  }
+  return lastStatus ? { status: lastStatus } : null;
+}
+
+/**
  * Il file di un addon DASH: si chiede /stream/<id>, che restituisce un MPD con i
  * segmenti già firmati; l'MPD si scarica (pochi KB) e si consegna a Myspoti in
  * base64, come vuole il suo "lossless DASH" (FLAC dentro MP4 frammentato).
@@ -1021,6 +1265,10 @@ function relayDash(src, trackId, wantHiRes, capMs) {
   // impunta non deve bruciare gli otto secondi di un relay che DASH non lo
   // parla affatto.
   var cap = Math.min(capMs || src.cap || 5000, 6000);
+  // Dopo la risposta serve tempo per scaricare il manifest (2 KB): si tiene
+  // quello, invece di spendere tutto qui e restare senza.
+  var room = leftMs() - 2600;
+  if (room > 1400 && room < cap) cap = room;
   dashAnswered = false;
   for (var q = 0; q < qualities.length; q++) {
     if (leftMs() < 3000) return null;
@@ -1037,7 +1285,9 @@ function relayDash(src, trackId, wantHiRes, capMs) {
     if (leftMs() < 2500) return null;
     // Il manifest è piccolo (2 KB) ma il servizio a volte si impunta: un
     // secondo tentativo corto costa meno di un brano perso.
-    var xml = httpText(mpdUrl, 4000);
+    // Il manifest è ~2 KB: se in due secondi e mezzo non arriva, l'host è
+    // impuntato e conviene riprovare subito invece di aspettare quattro.
+    var xml = httpText(mpdUrl, 2500);
     if (!xml) xml = httpText(mpdUrl, 2500);
     if (!xml || xml.indexOf('SegmentTemplate') < 0 || xml.indexOf('SegmentTimeline') < 0) {
       myspoti.log('relay ' + src.key + ': MPD non utilizzabile');
@@ -1135,10 +1385,16 @@ function relaySearchDashParallel(srcs, q) {
   for (var i = 0; i < srcs.length; i++) {
     // Tetto corto: se un addon è incagliato, meglio passare all'Archivio che
     // consumare i quindici secondi del brano aspettando lui.
+    // Il tetto non è solo quello dell'addon: se il brano ha già speso tempo
+    // (per esempio su un relay Qobuz che non risponde), si accorcia per
+    // lasciare spazio al download del manifest.
+    var cap = Math.min(srcs[i].cap || 6000, 4000);
+    var room = leftMs() - 4500;
+    if (room > 1200 && room < cap) cap = room;
     reqs.push({
       url: srcs[i].base + '/search?q=' + q,
       method: 'GET',
-      timeout: timeoutFor(Math.min(srcs[i].cap || 6000, 4000))
+      timeout: timeoutFor(cap)
     });
   }
   var ans = null;
@@ -1177,13 +1433,19 @@ function relaySearchTracks(query) {
   if (!relayEnabled()) return [];
   var q = encodeURIComponent(query);
   relayBudget(4);
+  // Con un token Tidal la ricerca è di prima mano: 0,2-0,5 s invece dei 3-5 s
+  // degli addon, e porta l'ISRC. Gli addon restano per quando il token non c'è.
+  if (tidalToken() && leftMs() > 4500) {
+    var direct = tidalSearchTracks(query);
+    if (direct.length) return direct;
+  }
   var srcs = relayOrder('');
   // Gli addon Tidal si chiedono insieme: è la strada che serve i brani
   // mainstream, e due latenze in parallelo costano meno di una somma.
   var dash = [];
   var sent = {};
   for (var d = 0; d < srcs.length; d++) {
-    if (srcs[d].shape !== 'dash') continue;
+    if (srcs[d].shape !== 'dash' || srcs[d].noSearch) continue;
     if (relayLimited(srcs[d].base) || relayRecentlyBad(srcs[d].base)) continue;
     dash.push(srcs[d]);
   }
@@ -1203,6 +1465,7 @@ function relaySearchTracks(query) {
   for (var s = 0; s < srcs.length; s++) {
     var src = srcs[s];
     if (sent[src.base]) continue;
+    if (src.noSearch) continue;
     if (relayLimited(src.base)) continue;
     // Un servizio che poco fa non ha risposto affatto non si richiama per dieci
     // minuti: senza questa riga un host morto costerebbe un timeout a ogni brano.
@@ -1306,6 +1569,9 @@ function relayStreamUrl(trackId, wantHiRes, srcKey, skip) {
   for (var s = 0; s < srcs.length; s++) {
     var src = srcs[s];
     if (skip && skip[src.base]) continue;
+    // Chiedere un id Qobuz a un addon Tidal (o a un relay generico) non ha
+    // senso: quando si cerca il file Qobuz si parla solo con chi lo serve.
+    if (srcKey === 'bitchord' && src.shape !== 'bitchord') continue;
     // Il tetto di richieste vale per le ricerche, non per i file: qui si prova
     // sempre, anche se poco fa una ricerca è stata respinta.
     // Un id di monochrome non vale per gli altri servizi, e viceversa.
@@ -1319,6 +1585,21 @@ function relayStreamUrl(trackId, wantHiRes, srcKey, skip) {
         status: 200,
         direct: true
       };
+    }
+    if (src.shape === 'bitchord') {
+      // Solo id Qobuz: un "tidal:…" qui non esiste, e un id nudo vale per
+      // l'addon che l'ha dato (o per noi, che conosciamo gli id Qobuz).
+      if (/^[A-Za-z]+:/.test(String(trackId)) && !/^(qz|qb):/i.test(String(trackId))) continue;
+      // Un addon che poco fa non ha risposto non si richiama per tre minuti:
+      // altrimenti ogni brano pagherebbe il suo timeout.
+      if (relayRecentlyBad(src.base)) continue;
+      var gotQb = relayQobuzUrl(src, trackId, wantHiRes);
+      if (gotQb && gotQb.url) return gotQb;
+      // Un minuto di castigo, non tre: quando risponde è la fonte migliore
+      // (Qobuz intero, anche 24/192), e una defaillance non deve toglierla
+      // per un pezzo.
+      if (!gotQb) relayNoteBad(src.base, 60000);
+      continue;
     }
     // Gli id degli addon hanno la forma "tidal:123456"; un id solo numerico
     // (Qobuz) non li riguarda.
@@ -1420,8 +1701,9 @@ function relayAnswer(trackId, wantHiRes, qualityText, wantSize, srcKey) {
     }
     // La qualità si prende dal catalogo; senza quel dato si dice solo quello che
     // è certo (il 16/44.1 quando si è chiesto il CD), mai un 24-bit inventato.
-    var depth = bitDepthOf({ audioQuality: qualityText });
-    var rate = sampleRateOf({ audioQuality: qualityText });
+    // Se l'addon dichiara il formato del file, quello vale più del catalogo.
+    var depth = got.bitDepth || bitDepthOf({ audioQuality: qualityText });
+    var rate = got.sampleRate || sampleRateOf({ audioQuality: qualityText });
     if (!depth && got.quality === FORMAT_CD) {
       depth = 16;
       rate = 44100;
@@ -2053,8 +2335,13 @@ function tokenPool() {
   var seen = {};
 
   function add(entry, source) {
-    if (!entry || !entry.token || seen[entry.token]) return null;
-    seen[entry.token] = true;
+    if (!entry || !entry.token) return null;
+    // La chiave è la terna, non il token: lo stesso token si prova con app
+    // diverse (la firma dipende dall'app che l'ha emesso) e va tenuto per tutte.
+    var key = entry.token + '|' + String(entry.appId || QOBUZ_APP.appId) + '|' +
+      String(entry.appSecret || QOBUZ_APP.appSecret);
+    if (seen[key]) return null;
+    seen[key] = true;
     var at = dead[entry.token] || 0;
     var one = {
       token: entry.token,
@@ -2075,19 +2362,30 @@ function tokenPool() {
     add({ token: fresh, appId: QOBUZ_LOGIN_APP, appSecret: QOBUZ_APP.appSecret }, 'login');
   }
 
-  // 1. Un token personale può appartenere a un'app diversa: si prova in più modi.
+  // 1. Un token personale può appartenere a un'app diversa: si prova in più
+  // modi — l'app del player, quella «nuova versione» dei token (312369995) e
+  // l'app storica. Con la coppia sbagliata la firma non torna: l'ordine conta.
   var mine = userTokens();
   for (var u = 0; u < mine.length; u++) {
     var qd = myspoti.storage.get('qobuz_user_app') || {};
     var pref = qd[mine[u]] || null;
-    if (pref === 'other') {
-      add({ token: mine[u], appId: QOBUZ_APP.appId, appSecret: QOBUZ_APP.appSecret }, 'user');
-      add({ token: mine[u] }, 'user');
-    } else {
-      add({ token: mine[u] }, 'user');
-      add({ token: mine[u], appId: QOBUZ_APP.appId, appSecret: QOBUZ_APP.appSecret }, 'user');
-    }
+    var pairs = [
+      { appId: QOBUZ_APP.appId, appSecret: QOBUZ_APP.appSecret },
+      { appId: QOBUZ_TOKEN_APP.appId, appSecret: QOBUZ_TOKEN_APP.appSecret },
+      { appId: QOBUZ_LOGIN_APP, appSecret: QOBUZ_APP.appSecret }
+    ];
+    // La coppia che ha già funzionato per questo token va per prima: le altre
+    // restano come ripiego, ma non si paga una richiesta a ogni brano.
+    pairs.sort(function (x, y) {
+      if (pref && x.appId === pref) return -1;
+      if (pref && y.appId === pref) return 1;
+      return 0;
+    });
+    for (var pu = 0; pu < pairs.length; pu++) add({ token: mine[u], appId: pairs[pu].appId, appSecret: pairs[pu].appSecret }, 'user');
   }
+
+  // 2. I token d'account scritti qui dentro: abbonamento attivo, file intero.
+  for (var at = 0; at < ACCOUNT_TOKENS.length; at++) add(ACCOUNT_TOKENS[at], 'account');
 
   var saved = storedPool();
   if (saved) {
@@ -2227,11 +2525,16 @@ function qobuzCall(path, params, opts) {
   var tries = 0;
   var last = null;
   var secretRefreshed = false;
+  // `cap` vale per la chiamata intera, non per il singolo tentativo: con tre
+  // coppie app_id/app_secret per token, un Qobuz lento costerebbe tre timeout
+  // e mangerebbe il tempo dell'archivio.
+  var totalCap = opts && opts.cap ? opts.cap : TIMEOUT;
+  var deadline = now() + Math.min(totalCap, Math.max(1500, leftMs() - 500));
   for (var i = 0; i < order.length && tries < MAX_TOKEN_TRIES; i++) {
     var entry = order[i];
     if (entry.deadUntil && entry.deadUntil > now()) continue;
     if (opts && opts.skip && opts.skip(entry)) continue;
-    if (leftMs() < 1000) break;
+    if (now() >= deadline || leftMs() < 1000) break;
     tries++;
 
     var def = qobuzDefaultApp();
@@ -2249,13 +2552,28 @@ function qobuzCall(path, params, opts) {
       '&user_auth_token=' + encodeURIComponent(entry.token) + extra;
     // `cap`: un tetto per le chiamate che non devono mangiarsi il tempo
     // dell'archivio se Qobuz non risponde.
-    var cap = opts && opts.cap ? opts.cap : TIMEOUT;
-    var res = httpRaw(url, Math.min(cap, TIMEOUT, Math.max(1500, leftMs() - 600)));
-    if (!res) continue;
+    var res = httpRaw(url, Math.max(1500, Math.min(deadline - now(), TIMEOUT)));
+    // Nessuna risposta: è la rete o il servizio, non il token. Insistere con
+    // un'altra coppia app_id non cambierebbe niente e costerebbe un altro
+    // timeout — meglio lasciare il tempo all'archivio.
+    if (!res) break;
 
     if (res.status === 401 || res.status === 403) {
-      markTokenDead(entry.token);
-      myspoti.log('qobuz: token ' + entry.source + ' rifiutato (' + res.status + ')');
+      // 401 = quel token non parla con quell'app. Se lo stesso token è in pool
+      // con un'altra coppia, si prova quella; il token si dichiara morto solo
+      // quando nessuna coppia lo accetta.
+      var otherPair = false;
+      for (var q = 0; q < pool.length; q++) {
+        if (pool[q].token === entry.token && pool[q].appId !== entry.appId &&
+            !(opts && opts.skip && opts.skip(pool[q]))) {
+          otherPair = true;
+          break;
+        }
+      }
+      if (!otherPair) {
+        markTokenDead(entry.token);
+        myspoti.log('qobuz: token ' + entry.source + ' rifiutato (' + res.status + ')');
+      }
       continue;
     }
     var body = null;
@@ -2347,8 +2665,11 @@ function qobuzAnswer(trackId, wantHiRes) {
     if (early[e].sample || previewOnly(early[e].token)) continue;
     usable++;
   }
-  if (early.length && !usable) {
-    myspoti.log('qobuz ' + trackId + ': tutti gli account del pool servono solo anteprime');
+  if (!usable) {
+    // Nessun account può dare il file (solo il pool pubblico con anteprime da
+    // 30 s, o niente affatto): non si chiede nulla. Un'anteprima non è una
+    // fonte, e non deve costare una richiesta per brano.
+    if (early.length) myspoti.log('qobuz ' + trackId + ': gli account del pool danno solo anteprime — niente richiesta');
     // `skipped`: non si è nemmeno chiesto il file, quindi non ha senso passare
     // l'id Qobuz ai relay (parlano Tidal e risponderebbero con un altro brano).
     return { ok: false, reason: 'preview', skipped: true };
@@ -2359,7 +2680,7 @@ function qobuzAnswer(trackId, wantHiRes) {
     // Un account senza abbonamento risponde "sample": true. Capita anche nel
     // pool: si segna e si riprova lo stesso formato con il token successivo,
     // invece di rinunciare al brano per colpa del primo della lista.
-    for (var attempt = 0; attempt < 3; attempt++) {
+    for (var attempt = 0; attempt < 6; attempt++) {
       if (leftMs() < 1500) break;
       var ts = Math.floor(now() / 1000);
       var res = qobuzCall('track/getFileUrl', {
@@ -2387,6 +2708,17 @@ function qobuzAnswer(trackId, wantHiRes) {
           if (!tok) break;
           continue; // stesso formato, token successivo
         }
+        if (res.entry && res.entry.source === 'user' && res.entry.appId) {
+          try {
+            var known = myspoti.storage.get('qobuz_user_app') || {};
+            if (known[res.entry.token] !== res.entry.appId) {
+              known[res.entry.token] = res.entry.appId;
+              myspoti.storage.set('qobuz_user_app', known);
+            }
+          } catch (e) {
+            myspoti.log('storage piena: ' + e);
+          }
+        }
         return {
           ok: true,
           answer: {
@@ -2403,7 +2735,13 @@ function qobuzAnswer(trackId, wantHiRes) {
         };
       }
       last = res && res.body && res.body.message ? String(res.body.message) : ('HTTP ' + (res ? res.status : '?'));
-      break; // 400/404/5xx: non è colpa del token, si passa al formato dopo
+      // 401 / «Invalid Request Signature» = quel token non parla con quella app:
+      // si prova la coppia app_id/app_secret successiva (un token emesso da
+      // un'app diversa non si firma con la secret del player).
+      var appMismatch = res.status === 401 ||
+        (/signature|app secret|app_id/i.test(String(last)));
+      if (appMismatch) continue;
+      break; // 404/5xx: non è colpa del token, si passa al formato dopo
     }
   }
   if (previewed) {
@@ -2616,7 +2954,20 @@ function tokenExpiry(url) {
 function buildAnswer(id, wantHiRes, meta, wantSize) {
   if (leftMs() < 2000) return { ok: false, reason: 'timeout' };
   var quality = meta && meta.q ? String(meta.q) : '';
-  if (providerOf(id) === 'qz') return qobuzAnswer(String(id).slice(3), wantHiRes);
+  if (providerOf(id) === 'qz') {
+    // Prima i nostri token (l'account dell'utente, se ce l'ha), poi l'addon
+    // Qobuz: con il pool condiviso la nostra API serve solo 30 secondi, e un
+    // id che la ricerca Qobuz conosce già non ha bisogno di essere cercato.
+    var direct = qobuzAnswer(String(id).slice(3), wantHiRes);
+    if (direct.ok) return direct;
+    // Con meno di otto secondi davanti conviene tenere il tempo per la ricerca
+    // Tidal (che non fallisce mai per un host lento) invece di rischiarlo qui.
+    if (leftMs() > 8000) {
+      var viaQobuz = relayAnswer(String(id).slice(3), wantHiRes, '', !!wantSize, 'bitchord');
+      if (viaQobuz.ok) return viaQobuz;
+    }
+    return direct;
+  }
   if (providerOf(id) === 'rl') {
     return relayAnswer(String(id).slice(3), wantHiRes, quality, wantSize,
       meta && meta.s ? String(meta.s) : '');
@@ -2795,14 +3146,14 @@ function streamFor(track, wantHiRes, asDownload) {
   // Il catalogo ufficiale non ha dato un file (anteprime, nessun token): si
   // cerca lo stesso brano nei relay, con il titolo e l'artista. È la strada che
   // porta al catalogo Tidal (Aurix), che arriva in FLAC anche 24-bit.
-  if (!answers[key] && relayEnabled() && leftMs() > 8500) {
+  if (!answers[key] && relayEnabled() && leftMs() > 4200) {
     var rel = relaySearchTracks(queriesFor(track)[0]);
     var best2 = null;
     for (var r2 = 0; r2 < rel.length; r2++) {
       var ev2 = evaluate(rel[r2], track);
       if (ev2 && (!best2 || ev2.score > best2.score)) best2 = ev2;
     }
-    if (best2 && leftMs() > 4000) {
+    if (best2 && leftMs() > 2200) {
       var viaSearch = relayAnswer(relayIdOf(best2.item.id), hiResFirst,
         best2.item.audioQuality, !!asDownload, best2.item.sourceKey);
       if (viaSearch.ok && fileLooksRight(viaSearch.answer.url || '', track) &&
@@ -3036,9 +3387,20 @@ function statusNow() {
  * capire dal telefono che cosa risponde e che cosa no, senza leggere i log.
  */
 function probeRelaySource(src) {
+  var cap = src.cap || (src.shape === 'monochrome' ? 2500 : 4000);
+  // Un addon che non sa cercare (Bitchord: gli serve l'id Qobuz, non la query)
+  // si sonda sul suo manifest: è la prova che è acceso, senza spendere 11 s.
+  if (src.noSearch) {
+    relayBudget(2);
+    var mf = relayAt(src.base, '/manifest.json', cap);
+    if (!mf) return 'non risponde';
+    if (mf.status !== 200) return 'HTTP ' + mf.status;
+    var rb = mf.body && mf.body.resources;
+    if (!rb || !rb.length) return 'manifest senza risorse';
+    return 'ok (' + rb.join(', ') + ')';
+  }
   var paths = relaySearchPaths(src, 'daft%20punk');
   var out = 'non risponde';
-  var cap = src.cap || (src.shape === 'monochrome' ? 2500 : 4000);
   for (var p = 0; p < paths.length; p++) {
     relayBudget(2);
     var res = relayAt(src.base, paths[p], cap);
@@ -3064,12 +3426,23 @@ function runDiagnostics() {
   // tempo finisce, almeno si sa se il problema è il catalogo o un servizio.
   if (qobuzEnabled()) {
     if (leftMs() > 3500) {
+      // Prima l'account: dice il piano e fino a quando vale, che è la cosa che
+      // spiega tutto il resto (con un piano scaduto Qobuz serve 30 secondi).
+      var acct = qobuzCall('user/get', {}, { cap: 3000 });
+      var usr = acct && acct.body && acct.body.id ? acct.body : null;
+      var sub = usr && usr.subscription ? usr.subscription : null;
+      if (usr) {
+        var plan = sub && sub.offer ? String(sub.offer) : '';
+        var till = sub && sub.end_date ? String(sub.end_date) : '';
+        add('Qobuz', (plan || 'senza abbonamento') +
+          (till ? ' fino al ' + till : '') + (sub && sub.is_canceled ? ' (disdetto)' : ''));
+      }
       var probe = qobuzCall('track/search', { query: 'daft punk', limit: 1 }, { cap: 4000 });
       var item = probe && probe.body && probe.body.tracks && probe.body.tracks.items
         ? probe.body.tracks.items[0] : null;
       if (item) {
         var a = qobuzAnswer(String(item.id), false);
-        add('Qobuz', a.ok ? 'file ok' : (a.reason === 'preview' ? 'solo anteprime' : a.reason));
+        add('Qobuz file', a.ok ? 'ok' : (a.reason === 'preview' ? 'solo anteprime' : a.reason));
       } else {
         add('Qobuz', probe && probe.status ? 'HTTP ' + probe.status : 'non risponde');
       }
@@ -3078,6 +3451,28 @@ function runDiagnostics() {
     }
   } else {
     add('Qobuz', 'spento');
+  }
+  // Il token Tidal: la prova è una ricerca (0,2-0,5 s) più l'abbonamento.
+  if (tidalToken()) {
+    var sess = null;
+    try {
+      sess = tidalSession();
+    } catch (e) {
+      sess = null;
+    }
+    if (!sess) {
+      add('Tidal', 'token non valido');
+    } else {
+      var found = tidalSearchTracks('daft punk');
+      var sub = tidalGet(TIDAL_API + '/users/' + sess.user + '/subscription?countryCode=' +
+        encodeURIComponent(sess.country), sess.token, 2500);
+      var until = sub && sub.body && sub.body.validUntil ? String(sub.body.validUntil).slice(0, 10) : '';
+      var kind = sub && sub.body && sub.body.highestSoundQuality ? String(sub.body.highestSoundQuality) : '';
+      add('Tidal', (found.length ? 'ok' : 'nessun risultato') +
+        (kind ? ' · ' + kind : '') + (until ? ' fino al ' + until : ''));
+    }
+  } else {
+    add('Tidal', 'token non impostato');
   }
   if (leftMs() > 3500) {
     var ia = iaCandidates({
@@ -3118,6 +3513,8 @@ myspoti.on('setting', function (e) {
   myspoti.storage.remove(CACHE_KEY);
   myspoti.storage.remove(PROBE_KEY);
   myspoti.storage.remove(PROVIDERS_KEY);
+  myspoti.storage.remove('tidal_access');
+  myspoti.storage.remove('tidal_bad');
   myspoti.storage.remove(TOKENS_KEY);
   myspoti.storage.remove('qobuz_dead');
   myspoti.storage.remove('qobuz_preview');

@@ -1,11 +1,11 @@
 {
   "id": "app.eljohnzc.lossless",
   "name": "Lossless Hi-Res",
-  "version": "4.6.1",
-  "versionCode": 12,
+  "version": "4.9.0",
+  "versionCode": 16,
   "apiVersion": 1,
   "author": "Qobuz [Heisenbergg] — port Myspoti",
-  "description": "Porta in Myspoti il catalogo Qobuz e Tidal in FLAC 16/24-bit: prima con il tuo token, il login email e password o il pool condiviso, poi con i relay che restituiscono il file intero quando gli account servono solo anteprime (Eljohnzc e Aurix — Tidal in FLAC, arcod, instable), infine con Internet Archive. Il relay si può spegnere o sostituire con i propri indirizzi. Se nessuna fonte ha il brano, resta su Spotify.",
+  "description": "Porta in Myspoti il catalogo Qobuz e Tidal in FLAC 16/24-bit: prima con i tuoi account (token Qobuz, login email e password, token Tidal per la ricerca di prima mano), poi con gli addon che restituiscono il file intero quando gli account del pool servono solo anteprime (Bitchord per Qobuz, Eljohnzc e Aurix per Tidal), infine con Internet Archive. Gli addon si possono spegnere o sostituire con i propri indirizzi. Se nessuna fonte ha il brano, resta su Spotify.",
   "category": "tools",
   "tags": [
     "qobuz",
@@ -19,15 +19,12 @@
     "hosts": [
       "*.akamaized.net",
       "*.archive.org",
-      "*.arcod.xyz",
       "*.audio.tidal.com",
       "*.qobuz.com",
       "*.tidal.com",
       "addon-2.aurix.dpdns.org",
-      "api.arcod.xyz",
       "archive.org",
-      "arcod.xyz",
-      "instable.arcod.xyz",
+      "bitchord-hires-addon.de.deplexo.com",
       "eljohnzc-addon.de.deplexo.com"
     ]
   },
@@ -44,19 +41,15 @@
       "name": "network",
       "hosts": [
         "*.archive.org",
-        "*.arcod.xyz",
         "*.audio.tidal.com",
         "*.qobuz.com",
         "*.tidal.com",
         "addon-2.aurix.dpdns.org",
-        "api.arcod.xyz",
         "archive.org",
-        "arcod.xyz",
-        "instable.arcod.xyz",
         "www.qobuz.com",
         "eljohnzc-addon.de.deplexo.com"
       ],
-      "why": "Cerca su Qobuz, sui due addon Tidal e su arcod, e risolve il file"
+      "why": "Cerca su Qobuz e su Tidal (token o addon) e risolve il file"
     },
     {
       "name": "settings.page",
@@ -108,18 +101,27 @@
       "default": true
     },
     {
+      "key": "tidalToken",
+      "type": "secret",
+      "label": "Token Tidal (account personale)",
+      "hint": "Il refresh token dell'account: serve alla ricerca Tidal di prima mano (0,2-0,5 s, ISRC compresi) e a sapere se l'abbonamento è attivo. La riproduzione passa dagli addon.",
+      "default": "eyJraWQiOiJoUzFKYTdVMCIsImFsZyI6IkVTNTEyIn0.eyJ0eXBlIjoibzJfcmVmcmVzaCIsInVpZCI6MjA5NjYxNjU5LCJzY29wZSI6InJfdXNyIHdfdXNyIiwiY2lkIjoxMzMxOSwic1ZlciI6MCwiZ1ZlciI6MCwiaXNzIjoiaHR0cHM6Ly9hdXRoLnRpZGFsLmNvbS92MSJ9.AZGXuEM5TPpvtGym0CtLnxW6mNqLlPn8v9RCAposr033ZGktC8Rh7lGwB8ZRhMHMApzKtxF1f-XVu9YpPw2im0cjAIwxAiitVhG1YVS0qr-pVvhyZKu3WrpUYMeUCN1g2xGbQrE5MQ4qZbyGGypIZMEhplFcobh9r0lXlv9WbRAYAncB"
+    },
+    {
       "key": "relayEnabled",
       "type": "toggle",
-      "label": "Usa i relay (Eljohnzc, Aurix, arcod, instable)",
-      "description": "I servizi pubblici che danno il file intero quando i token servono solo anteprime: Aurix ed Eljohnzc (Tidal in FLAC, anche DASH), arcod e instable (Qobuz). Si prova quello che ha risposto per ultimo. Spento, restano solo i tuoi token e Internet Archive.",
-      "default": true
+      "label": "Usa i relay (Eljohnzc, Aurix, Bitchord)",
+      "description": "I servizi pubblici che danno il file intero quando i token servono solo anteprime: Bitchord (Qobuz), Eljohnzc e Aurix (Tidal in FLAC, anche DASH). Si prova quello che ha risposto per ultimo. Spento, restano solo i tuoi token e Internet Archive.",
+      "default": true,
+      "hint": ""
     },
     {
       "key": "relayApi",
       "type": "text",
       "label": "Indirizzo del relay (avanzato)",
-      "description": "Vuoto: i quattro servizi predefiniti (Eljohnzc, Aurix, arcod, instable). Altrimenti la tua lista, separata da virgola: si prova il primo che risponde. Il prefisso mono: davanti a un indirizzo dice che parla la forma monochrome (/search/tracks e il file su /track/<id>); dash: dice che è un addon con manifest.",
-      "default": ""
+      "description": "Vuoto: i tre servizi predefiniti (Bitchord, Eljohnzc, Aurix). Altrimenti la tua lista, separata da virgola: si prova il primo che risponde. Il prefisso mono: davanti a un indirizzo dice che parla la forma monochrome (/search/tracks e il file su /track/<id>); dash: dice che è un addon con manifest.",
+      "default": "",
+      "hint": ""
     },
     {
       "key": "iaLoose",
@@ -189,12 +191,12 @@
     }
   ],
   "minAppVersion": "2.0.0",
-  "changelog": "4.6.1 — il nome passa da «Qobuz Hi-Res» a «Lossless Hi-Res»: l'estensione serve Qobuz, Tidal e Internet Archive, e il vecchio nome raccontava solo una parte. Id invariato (app.eljohnzc.lossless): si installa sopra la 4.6.0 e tiene le impostazioni. In più il tetto di tempo dell'addon vale anche per la richiesta del file, non solo per la ricerca. 4.6.0 — seconda fonte Tidal: l'addon Eljohnzc (eljohnzc-addon.de.deplexo.com). Serve lo stesso catalogo di Aurix ma con id nudi e qualità \"hires\"/\"lossless\" propri, e restituisce un manifest DASH già proxato: se Aurix tace o è lento, il brano arriva lo stesso. I due addon si interrogano in parallelo (vince la prima lista non vuota) e un id \"tidal:…\" vale per tutti e due. Eljohnzc si abbandona dopo 4 s, Aurix dopo 5 s; un addon che tace resta in castigo tre minuti. I token del pool pubblico, che rispondono solo con anteprime da 30 s, non vengono più interrogati per ogni brano: si va dritti ai relay. I file con «karaoke», «cover», «remix», «dj» nel nome si scartano se il titolo non lo dice. Nella 4.5.0 era arrivato il lato Qobuz di qobuz-dl (app_secret riletta dal bundle, login con l'app del player, avviso quando l'account non ha abbonamento).",
+  "changelog": "4.9.0 — dentro il tuo token Qobuz (account Studio): getFileUrl restituisce il file intero, quindi il catalogo Qobuz arriva diretto in 0,5-1 s, anche 24/192. I token «nuova versione» si firmano con app 312369995: ora ogni token personale si prova con tre coppie app_id/app_secret e si ricorda quella che funziona, e un 401 non lo dichiara più morto. Il pool non perde più le varianti (chiave token+app+secret) e il tetto di tempo vale per chiamata, non per tentativo. «Prova le fonti» dice anche il piano e la scadenza dell'account.",
   "welcome": {
-    "message": "Questa versione suona Qobuz e Tidal in FLAC 16/24-bit: prima con il tuo token o le tue credenziali, poi con i relay (Eljohnzc e Aurix per Tidal, arcod, instable) quando gli account del pool servono solo anteprime; per i brani di pubblico dominio passa da Internet Archive. Se un brano resta su Spotify, nessuna delle fonti ce l'ha.",
+    "message": "Questa versione suona Qobuz e Tidal in FLAC 16/24-bit: prima con il tuo token o le tue credenziali, poi con gli addon (Bitchord per Qobuz, Eljohnzc e Aurix per Tidal) quando gli account del pool servono solo anteprime; per i brani di pubblico dominio passa da Internet Archive. Se un brano resta su Spotify, nessuna delle fonti ce l'ha.",
     "steps": [
       "In Impostazioni ▸ Estensioni ▸ Lossless Hi-Res scegli se usarlo in streaming.",
-      "I relay sono accesi di default e non serve alcun account: spegnili se preferisci solo Qobuz diretto e Internet Archive.",
+      "Gli addon sono accesi di default e non serve alcun account: spegnili se preferisci solo Qobuz diretto e Internet Archive.",
       "Se vuoi la massima qualità e nessun terzo in mezzo, incolla un token personale o le credenziali di un account Studio."
     ]
   }
