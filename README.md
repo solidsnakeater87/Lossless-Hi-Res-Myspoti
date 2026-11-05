@@ -24,6 +24,109 @@ brano Spotify ──▶ abbinamento (titolo, artista, album, durata, ISRC)
    Myspoti: audio-source (riproduzione) · download-source (file .flac)
 ```
 
+## Cosa è cambiato nella 4.11.1
+
+- **Bitchord non era fra gli host dichiarati.** L'azione `network` del manifest elencava Aurix, Eljohnzc,
+  Qobuz, Tidal e l'Archivio, ma non l'addon Qobuz: sul telefono l'app rifiutava ogni sua richiesta con
+  «`bitchord-hires-addon.de.deplexo.com` is not in this extension's network hosts» e il brano restava
+  senza fonte. Dal computer funzionava, perché lì nessuno controlla i permessi: è il tipo di guasto che
+  i test in sandbox non vedono.
+- **Ora sono dichiarati** l'addon Qobuz, quello Deezer e gli host dei file che passiamo al player
+  (`*.akamaized.net`, `*.dzcdn.net`). Al primo avvio dopo l'aggiornamento l'app chiede di confermare i
+  nuovi host: va accettato, altrimenti restano bloccati.
+- **Il test che doveva accorgersene guardava la lista sbagliata:** confrontava gli indirizzi con
+  `media.hosts` (quella per i file) invece che con gli host dell'azione `network` (quella per le
+  richieste). Adesso controlla quella giusta, e controlla anche che i file che diamo al player stiano
+  fra i media host.
+
+## Cosa è cambiato nella 4.11.0
+
+- **Un addon Deezer fra le fonti** (forma «stream»): quando Qobuz e gli addon Tidal non hanno il brano,
+  si prova anche lui. Serve **FLAC 16/44 vero** — verificato: file da **43 MB** per un brano da 6 minuti,
+  `206 Partial Content`, `audio/flac`; ricerca in ~1 s, file in ~0,6 s.
+- **Gli id si tengono separati per catalogo.** Un id Deezer è un numero secco (`67238735`), che prima
+  sarebbe stato dato anche agli addon Qobuz/Tidal (e viceversa): era una richiesta buttata via a ogni
+  brano. Ora ogni addon riceve solo gli id del suo catalogo.
+- L'addon Deezer sta **in fondo alla lista** e ha un tetto di 4 s: si fa vivo solo quando serve, non
+  allunga i brani che già arrivano da Qobuz. Nei dodici brani di prova ha recuperato un classico che
+  prima restava scoperto.
+- Ricorda che questo addon dà il **16/44** (il meglio di Deezer): non è hi-res, è una rete di sicurezza
+  in più.
+- **Aurix passa prima di Eljohnzc.** Eljohnzc, che risponde `503` a ogni percorso da giorni, costava
+  due-tre secondi a ogni brano che solo Aurix sa servire: i classici arrivavano a filo del tempo (e a
+  volte non arrivavano). Un `5xx` adesso chiude subito il giro dei tentativi invece di ripetere le
+  altre forme di ricerca.
+- **L'addon Qobuz ha un tetto di 4 s** (erano 2,5) e finisce "in castigo" solo se rifiuta *subito*: un
+  timeout lungo è lentezza, non guasto, e prima bastavano due lentezze di fila per perdere per mezzo
+  minuto l'unica fonte che serve il file intero.
+
+Dodici brani di prova, dopo queste correzioni: **11 su 12**, i mainstream in **0,5-1,4 s**, i due
+classici dal DASH Tidal in 4-4,5 s.
+
+## Cosa è cambiato nella 4.10.0
+
+- **Addon nella forma di BitChord/Stremio.** Un link che finisce con `/manifest.json` viene riconosciuto
+  da solo: ricerca su `/search?q=`, file su `/stream/<id>`. Si incolla in **Servizi di ricambio**
+  (`relayApi`) e funziona senza altre impostazioni; in alternativa si può scrivere `stream:<indirizzo>`.
+- **`predefiniti` nella stessa casella.** Di suo, un indirizzo scritto a mano *sostituisce* gli addon di
+  serie. Scrivendo `predefiniti, <link>` si tengono tutti: Bitchord resta la prima scelta e il nuovo
+  addon fa da riserva. (Nel dubbio, è la forma consigliata.)
+- **Gli id Qobuz dell'addon passano da Bitchord.** La ricerca di questi addon restituisce id tipo
+  `q_9140031`: quel file Bitchord lo dà in un secondo, l'addon in tre. La ricerca resta dell'addon (a
+  volte è l'unica che trova il brano), il file lo chiede la fonte più veloce.
+- **Gli id Tidal (`t_…`) tornano come manifest DASH** e vengono riprodotti come quelli degli altri
+  addon Tidal: si legge il manifest, si passa il base64 al player. L'addon decide da sé se servire il
+  brano da Qobuz (URL diretto) o da Tidal (DASH): vanno bene entrambi.
+- Un addon lento non è un addon rotto: qualche secondo in più per il manifest è concesso, ma solo se
+  resta tempo per il resto del brano.
+
+Misurato con un addon vero di questo tipo, in catena con Bitchord: *Get Lucky* 16/44 in **1,4 s**,
+*Blu celeste* 24/96 in **0,7 s**, *Shape of You* 24/44 in **2,3 s**.
+
+## Cosa è cambiato nella 4.9.2
+
+- **Il catalogo Qobuz si consulta anche senza un account buono.** `track/search` risponde anche a chi
+  non manda nessun token: l'abbonamento serve al *file*, non alla ricerca. Quando il pool è vuoto o
+  tutti i token vengono rifiutati (`401`), la ricerca si fa lo stesso — pochi millisecondi — e l'id
+  trovato lo suona l'addon. Prima, con il pool a secco, si restava appesi alla ricerca dell'addon
+  (3-5 s per brano) o non si trovava niente.
+- La ricerca dell'addon ora parte **solo** se il catalogo non ha dato nessun abbinamento: una
+  richiesta in meno per ogni brano mainstream.
+- Verificato con **zero token Qobuz validi** in pool: **11 brani su 12**, la maggior parte in
+  **0,6-1,1 s**.
+
+## Cosa è cambiato nella 4.9.1
+
+Il problema non era il token Qobuz appena messo: erano le fonti attorno a lui che si erano spente, e
+un paio di scelte dell'estensione che, in quella situazione, la facevano sembrare rotta. In una
+sandbox pulita (nessuna cache, nessun token Tidal) il risultato era **3 brani su 12**, con l'audio
+che arrivava solo dall'Archivio; adesso sono **11 su 12**, quasi tutti da Qobuz in **0,5-2,6 s**.
+
+- **Un id Qobuz non si butta più via per un'anteprima.** Quando l'account del pool risponde con i 30
+  secondi, l'estensione segnava quell'id come «fonte senza audio»: il brano corrente lo salvava
+  Bitchord, ma dal brano dopo ogni id Qobuz veniva scartato — cioè spariva l'unico addon che ha il
+  catalogo Qobuz, e restavano quelli Tidal (uno oggi risponde 503). Ora la risposta «anteprima»
+  significa soltanto «questa API non mi dà il file», e il file lo chiede l'addon.
+- **La ricerca Qobuz si fa anche senza abbonamento.** L'abbonamento conta al momento del *file*, non
+  del catalogo: cercare con un token che serve solo assaggi è comunque la via più corta per trovare
+  l'id che Bitchord sa suonare. Prima, se nessun account aveva l'abbonamento, la ricerca Qobuz
+  veniva saltata del tutto.
+- **La sonda di stato non mette più l'addon «in castigo».** La prova delle fonti dura quattro secondi:
+  se l'addon Qobuz non faceva in tempo, la risposta «niente tempo» veniva letta come guasto e
+  Bitchord restava spento **per un minuto** — subito dopo l'installazione, cioè proprio quando si
+  prova l'estensione. Ora «niente tempo» non è un guasto, e un timeout isolato non basta: serve un
+  secondo colpo di fila, e il castigo è di mezzo minuto.
+- **Eljohnzc costa una richiesta ogni tre minuti.** Oggi risponde `503` a ogni percorso: prima veniva
+  richiamato quattro volte per brano, ora tre minuti di pausa dopo il primo `503` e si passa avanti.
+- **Anteprima = un altro account, non un altro formato.** Con un token che dà solo assaggi si prova
+  il token successivo del pool (uno può essere scaduto, un altro no) invece di bruciare 2-4 secondi
+  sulle varianti `app_id` dello stesso token. Se nessun account del pool ha l'abbonamento, il brano va
+  all'addon senza altre richieste.
+
+Restano veri i limiti di ieri: *Homemade* degli Eugenio in Via Di Gioia non è nel catalogo Qobuz che
+questi token vedono (la ricerca restituisce altri brani dello stesso album) e l'Archivio non ce l'ha;
+i due brani classici arrivano dal DASH Tidal, più lento (3-9 s).
+
 ## Cosa è cambiato nella 4.9.0
 
 - **Il tuo token Qobuz è dentro e funziona davvero.** L'account è **Studio (US)** e `getFileUrl`
@@ -218,7 +321,7 @@ l'estensione quando una sonda non conclude, pulsante **Prova le fonti**, tetto a
 
 Serve Myspoti **2.0.0 o successiva** (per Aurix, una versione che dichiari `audio.manifest`).
 
-**1. Dal file.** Scarica [`extension.zip`](extension.zip) (o `app.eljohnzc.lossless-4.9.0.zip`, è lo
+**1. Dal file.** Scarica [`extension.zip`](extension.zip) (o `app.eljohnzc.lossless-4.11.1.zip`, è lo
 stesso file), copialo sul telefono e installalo da *Impostazioni ▸ Estensioni ▸ Installa da un file*.
 Sopra la 4.5.0 Myspoti mostra **"Update needs your OK"** con le differenze (stesso `id`): si accetta
 una volta e le impostazioni restano.
@@ -227,7 +330,7 @@ una volta e le impostazioni restano.
 in *Installa da un indirizzo*.
 
 **3. Dal negozio.** Pubblica questo repository su GitHub con il topic **`myspoti-extension`** e una
-release con `extension.zip` allegato (`git tag v4.9.0 && git push origin v4.9.0`; il workflow in
+release con `extension.zip` allegato (`git tag v4.11.1 && git push origin v4.11.1`; il workflow in
 `.github/workflows/release.yml` controlla, compila e allega il pacchetto).
 
 Poi: **Impostazioni ▸ Estensioni ▸ Lossless Hi-Res** e una playlist in play. Nel player, sotto il

@@ -1,8 +1,8 @@
 {
   "id": "app.eljohnzc.lossless",
   "name": "Lossless Hi-Res",
-  "version": "4.9.0",
-  "versionCode": 16,
+  "version": "4.11.1",
+  "versionCode": 21,
   "apiVersion": 1,
   "author": "Qobuz [Heisenbergg] — port Myspoti",
   "description": "Porta in Myspoti il catalogo Qobuz e Tidal in FLAC 16/24-bit: prima con i tuoi account (token Qobuz, login email e password, token Tidal per la ricerca di prima mano), poi con gli addon che restituiscono il file intero quando gli account del pool servono solo anteprime (Bitchord per Qobuz, Eljohnzc e Aurix per Tidal), infine con Internet Archive. Gli addon si possono spegnere o sostituire con i propri indirizzi. Se nessuna fonte ha il brano, resta su Spotify.",
@@ -17,15 +17,17 @@
   ],
   "media": {
     "hosts": [
-      "*.akamaized.net",
-      "*.archive.org",
-      "*.audio.tidal.com",
-      "*.qobuz.com",
-      "*.tidal.com",
       "addon-2.aurix.dpdns.org",
       "archive.org",
       "bitchord-hires-addon.de.deplexo.com",
-      "eljohnzc-addon.de.deplexo.com"
+      "deezer.rickyaddons.dpdns.org",
+      "eljohnzc-addon.de.deplexo.com",
+      "*.akamaized.net",
+      "*.archive.org",
+      "*.audio.tidal.com",
+      "*.dzcdn.net",
+      "*.qobuz.com",
+      "*.tidal.com"
     ]
   },
   "actions": [
@@ -40,14 +42,18 @@
     {
       "name": "network",
       "hosts": [
-        "*.archive.org",
-        "*.audio.tidal.com",
-        "*.qobuz.com",
-        "*.tidal.com",
         "addon-2.aurix.dpdns.org",
         "archive.org",
+        "bitchord-hires-addon.de.deplexo.com",
+        "deezer.rickyaddons.dpdns.org",
+        "eljohnzc-addon.de.deplexo.com",
         "www.qobuz.com",
-        "eljohnzc-addon.de.deplexo.com"
+        "*.akamaized.net",
+        "*.archive.org",
+        "*.audio.tidal.com",
+        "*.dzcdn.net",
+        "*.qobuz.com",
+        "*.tidal.com"
       ],
       "why": "Cerca su Qobuz e su Tidal (token o addon) e risolve il file"
     },
@@ -191,7 +197,7 @@
     }
   ],
   "minAppVersion": "2.0.0",
-  "changelog": "4.9.0 — dentro il tuo token Qobuz (account Studio): getFileUrl restituisce il file intero, quindi il catalogo Qobuz arriva diretto in 0,5-1 s, anche 24/192. I token «nuova versione» si firmano con app 312369995: ora ogni token personale si prova con tre coppie app_id/app_secret e si ricorda quella che funziona, e un 401 non lo dichiara più morto. Il pool non perde più le varianti (chiave token+app+secret) e il tetto di tempo vale per chiamata, non per tentativo. «Prova le fonti» dice anche il piano e la scadenza dell'account.",
+  "changelog": "4.11.1 — corretto un errore mio: Bitchord non era fra gli host dichiarati nell'azione `network`, quindi sul telefono l'app bloccava le sue richieste («is not in this extension's network hosts») e il brano restava senza fonte mentre dal computer funzionava — nei test nessuno controlla i permessi. Ora sono dichiarati l'addon Qobuz, quello Deezer e i loro file (akamaized, dzcdn). Al primo avvio dopo l'aggiornamento l'app chiederà di confermare i nuovi host: accetta. Il test che doveva accorgersene guardava la lista sbagliata (i media host invece dell'azione network): adesso controlla quella giusta.",
   "welcome": {
     "message": "Questa versione suona Qobuz e Tidal in FLAC 16/24-bit: prima con il tuo token o le tue credenziali, poi con gli addon (Bitchord per Qobuz, Eljohnzc e Aurix per Tidal) quando gli account del pool servono solo anteprime; per i brani di pubblico dominio passa da Internet Archive. Se un brano resta su Spotify, nessuna delle fonti ce l'ha.",
     "steps": [
