@@ -1,5 +1,5 @@
 /*
- * Lossless Hi-Res — estensione per Myspoti (API 1), versione 4.11.1.
+ * Lossless Hi-Res — estensione per Myspoti (API 1), versione 4.13.0.
  * Stesso id dal 4.0.0: si installa sopra la versione precedente.
  * ---------------------------------------------------------------------------
  * Le fonti, nell'ordine in cui si provano:
@@ -51,9 +51,27 @@ var TIDAL_API = 'https://api.tidal.com/v1';
 var TIDAL_CLIENT = { id: 'zU4XHVVkc2tDPo4t', secret: 'VJ8pQggXLhLy0WHahglCD4N1nAkkXQtGYpq2HrHD7H1' };
 
 /** Il refresh token scritto nelle impostazioni, o ''. */
+/**
+ * I token Tidal scritti nelle impostazioni: uno o più, separati da spazio, virgola
+ * o a capo. Si provano in ordine e si ricorda quello che rinnova: un account
+ * sospeso (Tidal ne sospende parecchi, «abuse_detected») non deve impedire agli
+ * altri di funzionare.
+ */
+function tidalTokens() {
+  var raw = String(setting('tidalToken', '') || '');
+  var parts = raw.split(/[\s,;]+/);
+  var out = [];
+  for (var i = 0; i < parts.length; i++) {
+    var t = trim(parts[i]);
+    if (t.length >= 40 && out.indexOf(t) < 0) out.push(t);
+  }
+  return out;
+}
+
+/** Il primo token Tidal (per i messaggi che ne vogliono uno solo). */
 function tidalToken() {
-  var t = trim(String(setting('tidalToken', '') || ''));
-  return t.length >= 40 ? t : '';
+  var list = tidalTokens();
+  return list.length ? list[0] : '';
 }
 
 /** GET con Bearer: { status, body } oppure null. */
@@ -81,12 +99,33 @@ function tidalGet(url, token, timeoutMs) {
 
 /** Lo stato dell'account, o null. In storage 4 ore (quanto dura l'access token). */
 function tidalSession() {
-  var rt = tidalToken();
+  var list = tidalTokens();
+  if (!list.length) return null;
+  var start = parseInt(String(myspoti.storage.get('tidal_next') || '0'), 10) || 0;
+  for (var n = 0; n < list.length; n++) {
+    var idx = (start + n) % list.length;
+    var one = tidalSessionFor(list[idx]);
+    if (one) {
+      try {
+        myspoti.storage.set('tidal_next', String(idx));
+      } catch (e) {
+        myspoti.log('storage piena: ' + e);
+      }
+      return one;
+    }
+  }
+  return null;
+}
+
+/** Lo stato di *un* token Tidal: { token, exp, country, user } oppure null. */
+function tidalSessionFor(rt) {
   if (!rt) return null;
   var saved = myspoti.storage.get('tidal_access');
   if (saved && saved.rt === rt && saved.token && saved.exp && saved.exp - now() > 5 * 60000) return saved;
-  var bad = myspoti.storage.get('tidal_bad');
-  if (bad && bad.rt === rt && now() - (bad.at || 0) < 30 * 60000) return null;
+  var badAll = myspoti.storage.get('tidal_bad') || {};
+  var badKey = String(rt).slice(-10);
+  var badAt = badAll[badKey] || 0;
+  if (badAt && now() - badAt < 30 * 60000) return null;
   var res = httpPostForm(TIDAL_AUTH, {
     grant_type: 'refresh_token',
     refresh_token: rt,
@@ -99,7 +138,9 @@ function tidalSession() {
     myspoti.log('tidal: token non rinnovato — ' + why);
     // Un token scaduto non deve costare una richiesta a ogni brano.
     try {
-      myspoti.storage.set('tidal_bad', { rt: rt, at: now() });
+      var bm = myspoti.storage.get('tidal_bad') || {};
+      bm[badKey] = now();
+      myspoti.storage.set('tidal_bad', bm);
     } catch (e) {
       myspoti.log('storage piena: ' + e);
     }
@@ -116,7 +157,11 @@ function tidalSession() {
   };
   try {
     myspoti.storage.set('tidal_access', one);
-    myspoti.storage.remove('tidal_bad');
+    var bm2 = myspoti.storage.get('tidal_bad') || {};
+    if (bm2[badKey]) {
+      delete bm2[badKey];
+      myspoti.storage.set('tidal_bad', bm2);
+    }
   } catch (e) {
     myspoti.log('storage piena: ' + e);
   }
@@ -199,8 +244,10 @@ var SHARED_TOKENS = [
  * sbagliata Qobuz risponde «Invalid Request Signature».
  */
 var ACCOUNT_TOKENS = [
-  { token: 'JGR6Sd2IYC86-O-jm24JQPZR4-heGMmXjNND6RBo9idJDIBecJZ687c9DQ6D5jAc7IugtidTjegE6hlqdFo_uQ',
-    appId: '312369995', appSecret: 'e79f8b9be485692b0e5f9dd895826368', label: 'Qobuz Studio (US)' }
+  // Verificato il 6 novembre: getFileUrl dà il file intero in 24/88.2 (133 MB),
+  // non i 30 secondi. Il vecchio account US risponde 401 da ieri e non è più qui.
+  { token: 'U1gsOTxEQZmxO-6jTxkysinHkaFNNld3eJC9WRA0cmvw1HosDl9vfQTGRQEo2zkkcwP9ADc3L20nYNaI0l7E4g',
+    appId: '312369995', appSecret: 'e79f8b9be485692b0e5f9dd895826368', label: 'Qobuz Studio (NZ)' }
 ];
 var QOBUZ_APP = { appId: '798273057', appSecret: 'abb21364945c0583309667d13ca3d93a' };
 var QOBUZ_TOKEN_APP = { appId: '312369995', appSecret: 'e79f8b9be485692b0e5f9dd895826368' };
@@ -255,6 +302,10 @@ function now() {
 function startBudget(seconds) {
   budgetTotal = seconds * 1000;
   deadline = now() + budgetTotal;
+  // Il silenzio di Qobuz si misura per chiamata: se l'API non risponde, non ha
+  // senso richiederla con un altro token — è lo stesso indirizzo, e intanto il
+  // tempo dell'Archivio se ne va.
+  qobuzSilentAt = 0;
 }
 
 /**
@@ -917,7 +968,7 @@ var RELAY_SOURCES = [
   // La sua ricerca costa ~11 s, quindi non si usa: gli id Qobuz li conosce già
   // la nostra ricerca, e qui si chiede solo il file di un id che si ha in mano.
   { key: 'bitchord', base: 'https://bitchord-hires-addon.de.deplexo.com', shape: 'bitchord',
-    q: ['lossless', 'high'], cap: 4000, catalog: 'qobuz', noSearch: true },
+    q: ['lossless', 'high'], cap: 3000, catalog: 'qobuz', noSearch: true },
   // Deezer (rickyaddons), forma «stream» come gli addon di BitChord: parla il
   // catalogo Deezer e, con un account HiFi, serve FLAC 16/44 veri (provato: un
   // .flac da 43 MB per un brano da 6 minuti). Gli id sono numeri secchi, quindi
@@ -1295,7 +1346,10 @@ function relayQobuzUrl(src, trackId, wantHiRes, reserveMs) {
     // dopo in tre decimi di secondo: un secondo tentativo costa poco e vale la
     // pena (è l'unica fonte che dà il file Qobuz intero).
     var res = null;
-    for (var attempt = 0; attempt < 2; attempt++) {
+    // Il secondo tentativo vale la pena solo se c'è tempo: su rete lenta due
+    // timeout da quattro secondi si mangiano il brano intero.
+    var attempts = leftMs() > 7000 ? 2 : 1;
+    for (var attempt = 0; attempt < attempts; attempt++) {
       res = relayAt(src.base, '/stream/' + encodeURIComponent(bare) +
         '?quality=' + qualities[i], cap);
       if (res) break;
@@ -1303,9 +1357,27 @@ function relayQobuzUrl(src, trackId, wantHiRes, reserveMs) {
     }
     // Se non risponde nemmeno al secondo colpo, la seconda qualità non
     // cambierebbe niente: il brano passa agli addon Tidal.
-    if (!res) return { failedFast: (now() - started) < 900 };
+    if (!res) {
+      myspoti.log('relay qz ' + bare + ': ' + src.key + ' non ha risposto in ' +
+        (now() - started) + ' ms');
+      return { failedFast: (now() - started) < 900 };
+    }
     lastStatus = res.status;
     var b = res.body || {};
+    if (res.status === 404) {
+      // «not available in this addon» per ogni id: non è questo brano, è
+      // l'addon che ha smesso di servire. Due volte di fila e si mette da parte.
+      var miss = (relayState().miss || 0) + 1;
+      var stm = relayState();
+      stm.miss = miss;
+      relaySave(stm);
+      if (miss >= 2) {
+        stm.miss = 0;
+        relaySave(stm);
+        relayNoteBad(src.base, 3 * 60000);
+      }
+      return { status: 404 };
+    }
     if (b.encrypted === true) continue;
     var u = typeof b.url === 'string' ? b.url : '';
     // Solo https, con l'eccezione di un servizio di prova in locale.
@@ -1498,6 +1570,9 @@ function relaySearchDashParallel(srcs, q) {
     try {
       body = JSON.parse(r.body);
     } catch (e2) {
+      // Una pagina HTML al posto del JSON (tipico: un redirect alla pagina del
+      // provider, o una chiave scaduta): non è "nessun risultato", è un guasto.
+      relayNoteBad(srcs[j].base, 3 * 60000);
       continue;
     }
     if (!body) continue;
@@ -1513,6 +1588,9 @@ function relaySearchTracks(query) {
   if (!relayEnabled()) return [];
   var q = encodeURIComponent(query);
   relayBudget(4);
+  // La ricerca negli addon ha un tetto suo: con due fonti morte (una risponde
+  // una pagina HTML, l'altra 503) questa fase arrivava a cinque secondi da sola.
+  var stopSearch = now() + 2600;
   // Con un token Tidal la ricerca è di prima mano: 0,2-0,5 s invece dei 3-5 s
   // degli addon, e porta l'ISRC. Gli addon restano per quando il token non c'è.
   if (tidalToken() && leftMs() > 4500) {
@@ -1525,10 +1603,18 @@ function relaySearchTracks(query) {
   var dash = [];
   var sent = {};
   for (var d = 0; d < srcs.length; d++) {
-    if (srcs[d].shape !== 'dash' || srcs[d].noSearch) continue;
+    if ((srcs[d].shape !== 'dash' && srcs[d].shape !== 'stream') || srcs[d].noSearch) continue;
     if (relayLimited(srcs[d].base) || relayRecentlyBad(srcs[d].base)) continue;
     dash.push(srcs[d]);
   }
+  // Prima chi risponde con un JSON leggero (gli addon «stream», 0,5-1 s) e poi
+  // gli addon DASH, che a freddo si prendono 3-5 secondi: l'ordine conta quando
+  // il tempo del brano è poco.
+  dash.sort(function (a, b) {
+    var x = a.shape === 'stream' ? 0 : 1;
+    var y = b.shape === 'stream' ? 0 : 1;
+    return x - y;
+  });
   if (dash.length && dashSupported()) {
     var together = relaySearchDashParallel(dash, q);
     if (together) {
@@ -1544,6 +1630,7 @@ function relaySearchTracks(query) {
   }
   for (var s = 0; s < srcs.length; s++) {
     var src = srcs[s];
+    if (now() > stopSearch) break;
     if (sent[src.base]) continue;
     if (src.noSearch) continue;
     if (relayLimited(src.base)) continue;
@@ -1570,6 +1657,12 @@ function relaySearchTracks(query) {
         relayNoteOk(src.base);
         relayRememberShape(/get-music/.test(paths[p]) ? 'kenny' : 'arcod');
         return items;
+      }
+      // Un 200 che non è JSON (tipico: un redirect alla pagina del provider) non
+      // è "vuoto": è un guasto dichiarato. Tre minuti in fondo alla lista.
+      if (!res.body) {
+        relayNoteBad(src.base, 180000);
+        break;
       }
       if (res.status >= 200 && res.status < 300) break; // risposta valida ma vuota
     }
@@ -1655,6 +1748,17 @@ function relayStreamUrl(trackId, wantHiRes, srcKey, skip, probing) {
       return x - y;
     });
   }
+  // La fonte da cui arriva questo id (se arriva da una): serve a non chiedere
+  // a Bitchord il numero di un brano Deezer — che è un altro brano, con lo
+  // stesso aspetto (un numero secco).
+  var fromSrc = null;
+  if (srcKey) {
+    var allSrc = relaySources();
+    for (var fs = 0; fs < allSrc.length; fs++) if (allSrc[fs].key === srcKey) fromSrc = allSrc[fs];
+  }
+  var idHasPrefix = /^[A-Za-z0-9_-]+:/.test(String(trackId));
+  var idIsQobuz = /^(qz|qb|qobuz):/i.test(String(trackId));
+
   var lastStatus = 0;
   for (var s = 0; s < srcs.length; s++) {
     var src = srcs[s];
@@ -1671,21 +1775,24 @@ function relayStreamUrl(trackId, wantHiRes, srcKey, skip, probing) {
       // Gli id di questi addon sono già i loro ("q_1068442", "t_123"): si
       // tolgono i prefissi che mettiamo noi.
       var origS = String(trackId);
+      // `relayAnswer` arriva qui con il prefisso `rl:` già tolto: quello che
+      // dice da dove viene l'id è `srcKey` (la fonte che l'ha cercato).
       var relayed = origS.indexOf(RELAY_PREFIX) === 0;
-      var relayBare = relayed ? origS.slice(RELAY_PREFIX.length) : '';
+      var relayBare = relayed ? origS.slice(RELAY_PREFIX.length) : origS;
+      var fromRelay = relayed || !!fromSrc;
       var bareS = relayed ? relayBare : origS.replace(/^[A-Za-z0-9_-]+:/, '');
       if (!bareS) continue;
       // Ogni addon parla il suo catalogo: «67238735» è Deezer, «q_9140031» è
       // Qobuz, «t_190247167» è Tidal. Sbagliare qui vuol dire chiedere un brano
       // che non c'entra: un id Qobuz "qz:9140031" ridotto a "9140031" sarebbe
       // un id Deezer *diverso*. Quindi si guarda l'id com'è, non ridotto.
-      var numId = relayed && /^\d+$/.test(relayBare);
+      var numId = fromRelay && /^\d+$/.test(relayBare);
       var qobuzish = /^(qz|qb|qobuz):/i.test(origS) || /^q_\d+$/.test(relayBare);
       var tidalish = /^tidal:/i.test(origS) || /^t_\d+$/.test(relayBare);
       // Un id che non viene da un addon (qz:…, tidal:…) qui non serve: il file
       // di quel catalogo lo danno altre fonti, e chiederlo a un addon Deezer
       // significherebbe suonare un altro brano.
-      if (!relayed) continue;
+      if (!fromRelay) continue;
       if (src.catalog === 'deezer') {
         // Un id Deezer vale solo per l'addon che l'ha dato.
         if (!numId) continue;
@@ -1706,7 +1813,9 @@ function relayStreamUrl(trackId, wantHiRes, srcKey, skip, probing) {
           if (viaB && viaB.url) return viaB;
         }
       }
+      var tS = now();
       var gotS = relayStreamDirect(src, bareS, src.cap || 6000);
+      if (!gotS) myspoti.log('relay ' + bareS + ': ' + src.key + ' niente in ' + (now() - tS) + ' ms');
       if (gotS) return gotS;
       continue;
     }
@@ -1720,9 +1829,11 @@ function relayStreamUrl(trackId, wantHiRes, srcKey, skip, probing) {
       };
     }
     if (src.shape === 'bitchord') {
-      // Solo id Qobuz: un "tidal:…" qui non esiste, e un id nudo vale per
-      // l'addon che l'ha dato (o per noi, che conosciamo gli id Qobuz).
-      if (/^[A-Za-z]+:/.test(String(trackId)) && !/^(qz|qb|qobuz):/i.test(String(trackId))) continue;
+      // Solo id Qobuz. Un id con un altro prefisso ("tidal:…") qui non esiste;
+      // un numero secco vale solo se viene da Qobuz (la nostra ricerca, o un
+      // addon che parla Qobuz) — il numero di un brano Deezer è un altro brano.
+      if (idHasPrefix && !idIsQobuz) continue;
+      if (!idIsQobuz && !(fromSrc && fromSrc.catalog === 'qobuz')) continue;
       // Un addon che poco fa non ha risposto non si richiama per tre minuti:
       // altrimenti ogni brano pagherebbe il suo timeout.
       if (relayRecentlyBad(src.base)) continue;
@@ -1732,10 +1843,11 @@ function relayStreamUrl(trackId, wantHiRes, srcKey, skip, probing) {
       if (gotQb && gotQb.url) return gotQb;
       // Nessun tempo: non è un guasto, non si segna niente.
       if (gotQb && gotQb.skipped) continue;
-      // Un rifiuto immediato è un guasto; un timeout lungo no (questo addon a
-      // volte ci mette quattro secondi e poi dà il file). Solo nel primo caso
-      // si conta un "colpo", e servono due di fila per finire in fondo.
-      if (gotQb && gotQb.failedFast) relayNoteFlaky(src.base);
+      // Un tentativo andato a vuoto conta come "colpo": due di fila e la fonte
+      // va in fondo per mezzo minuto. Un timeout isolato è lentezza (questo
+      // addon, quando è vivo, a volte ci mette quattro secondi), due di fila
+      // sono un guasto — e con l'addon morto ogni brano pagava il suo tempo.
+      relayNoteFlaky(src.base);
       continue;
     }
     // Gli id degli addon hanno la forma "tidal:123456"; un id solo numerico
@@ -1759,8 +1871,10 @@ function relayStreamUrl(trackId, wantHiRes, srcKey, skip, probing) {
       // ma li serve lui). Bitchord invece parla proprio Qobuz.
       var qobuzCatalogId = /^(qz|qb|qobuz):/i.test(String(trackId));
       if (qobuzCatalogId && src.catalog === 'tidal') continue;
-      if (!dashId && srcKey && srcKey !== src.key && !sameCatalog) continue;
-      if (!dashId && !srcKey) continue;
+      // Un id senza prefisso (il numero di un brano Deezer, per esempio) non
+      // riguarda un addon Tidal: lì diventerebbe «tidal:67238735», cioè un
+      // altro brano. Vale solo se arriva da un addon dello stesso catalogo.
+      if (!dashId && !(fromSrc && fromSrc.catalog === src.catalog)) continue;
       var fullDash = String(trackId);
       var bareDash = fullDash.replace(/^[A-Za-z0-9_-]+:/, '');
       var forms;
@@ -2818,11 +2932,22 @@ function qobuzCall(path, params, opts) {
  * revocati — questa resta la via più corta per trovare l'id che l'addon sa
  * suonare. Poche decine di millisecondi, e non tocca nessun account.
  */
+var qobuzSilentAt = 0;
+
+/** Vero se in questa chiamata Qobuz ha già taciuto del tutto. */
+function qobuzSilent() {
+  return qobuzSilentAt > 0 && now() - qobuzSilentAt < 30000;
+}
+
 function qobuzAnonSearch(query, capMs) {
   var url = qobuzApi() + 'track/search?app_id=' + encodeURIComponent(QOBUZ_TOKEN_APP.appId) +
     '&query=' + encodeURIComponent(query) + '&limit=20';
   var res = httpRaw(url, capMs || 5000);
-  if (!res || res.status !== 200) return null;
+  if (!res) {
+    qobuzSilentAt = now();
+    return null;
+  }
+  if (res.status !== 200) return null;
   try {
     return JSON.parse(res.body);
   } catch (e) {
@@ -2834,8 +2959,8 @@ function qobuzSearchTracks(query, anon) {
   if (!trim(query)) return [];
   // Sei secondi bastano e avanzano per una ricerca: oltre, meglio passare
   // all'archivio che restare appesi a Qobuz.
-  var body = anon ? qobuzAnonSearch(query, 5000)
-    : (qobuzCall('track/search', { query: query, limit: 20 }, { cap: 6000 }) || {}).body;
+  var body = anon ? qobuzAnonSearch(query, 3500)
+    : (qobuzCall('track/search', { query: query, limit: 20 }, { cap: 3500 }) || {}).body;
   var items = body && body.tracks ? body.tracks.items : null;
   if (!items || !items.length) return [];
   var out = [];
@@ -2975,6 +3100,36 @@ function qobuzAnswer(trackId, wantHiRes) {
  * { ids: [ { i: "19170173", h: 1 }, … ], at }. In storage per due settimane:
  * così un brano già abbinato costa una sola richiesta (lo stream).
  */
+/**
+ * Vero se fra i candidati ce n'è almeno uno che una fonte *viva* sa suonare.
+ * Un id Qobuz quando l'addon Qobuz tace non conta: è solo un numero.
+ */
+function anyPlayable(all) {
+  if (!all || !all.length) return false;
+  var st = relayState();
+  var qobuzAlive = false;
+  var tidalAlive = false;
+  var deezerAlive = false;
+  var srcs = relaySources();
+  for (var i = 0; i < srcs.length; i++) {
+    var b = srcs[i].base;
+    var bad = st.bad && st.bad[b] ? st.bad[b] : 0;
+    var ttl = st.badTtl && st.badTtl[b] ? st.badTtl[b] : 10 * 60000;
+    if (bad && now() - bad < ttl) continue;
+    if (srcs[i].catalog === 'qobuz') qobuzAlive = true;
+    if (srcs[i].catalog === 'tidal') tidalAlive = true;
+    if (srcs[i].catalog === 'deezer') deezerAlive = true;
+  }
+  for (var j = 0; j < all.length; j++) {
+    var id = String(all[j].item.id);
+    if (providerOf(id) === 'qz' && (qobuzAlive || qobuzCanServe())) return true;
+    if (providerOf(id) === 'rl' && deezerAlive) return true;
+    if (providerOf(id) === 'rl' && tidalAlive) return true;
+    if (providerOf(id) === 'ia') return true;
+  }
+  return false;
+}
+
 function findCandidates(track) {
   var key = matchKey(track);
   var cached = readCache(key);
@@ -2998,46 +3153,46 @@ function findCandidates(track) {
     return ranked;
   }
 
-  // Qobuz diretto: la ricerca funziona anche con i token che servono solo
-  // anteprime (l'abbonamento conta al momento del file, non del catalogo), ed è
-  // la via più corta: l'id trovato qui lo può suonare anche il relay. Se però
-  // *tutti* gli account sono già segnati "solo anteprime" la ricerca Qobuz non
-  // porta da nessuna parte: si va diritti al relay, che ha anche il catalogo
-  // Tidal (Aurix).
-  // La ricerca funziona anche quando gli account servono solo anteprime —
-  // l'abbonamento conta al momento del *file*, non del catalogo. E gli id
-  // Qobuz sono quelli che l'addon Bitchord sa suonare: senza questa ricerca
-  // restavano solo gli addon Tidal (uno dei quali oggi è giù).
-  var qobuzDirect = qobuzEnabled() && usableTokens() > 0;
-  if (!qobuzDirect && qobuzEnabled() && queries.length && leftMs() > 5000) {
-    // Nessun token buono: il catalogo Qobuz risponde lo stesso, e l'id che
-    // troviamo qui lo suona l'addon.
+  // 1. Catalogo Qobuz **anonimo**: una richiesta, nessun token da ruotare,
+  // 200-300 ms. È la via più corta: gli id Qobuz sono quelli che l'addon sa
+  // suonare, e non dipendono da nessun account (i token in giro scadono, questo
+  // no). Prima si partiva dai token e la ricerca costava secondi — sul telefono
+  // erano secondi tolti al brano.
+  if (qobuzEnabled() && queries.length && leftMs() > 4000) {
     addRanked(qobuzSearchTracks(queries[0], true) || []);
   }
+
+  // 2. Solo se il catalogo anonimo non ha dato niente e c'è un account che può
+  // servire il file, si prova la ricerca coi token (può vedere qualche brano in
+  // più: dipende dal paese dell'account).
+  var qobuzDirect = qobuzEnabled() && qobuzCanServe() && !all.length && !qobuzSilent();
   if (qobuzDirect) {
-    // Con il relay acceso due ricerche bastano: se il brano non esce fuori, lo
-    // troverà la ricerca del relay (che costa meno di una terza query Qobuz).
     var maxQ = relayEnabled() ? 2 : MAX_QUERIES;
     for (var i = 0; i < queries.length && i < maxQ; i++) {
-      if (i > 0 && (nearDeadline(5000, 0.3) || leftMs() < 9500)) break;
+      if (i > 0 && (nearDeadline(5000, 0.3) || leftMs() < 4000)) break;
       addRanked(searchTracks(queries[i]));
-      // Abbinamento netto: inutile insistere, ma solo se arriva da una fonte che
-      // ha già dimostrato di servire audio.
       var good = 0;
       for (var g = 0; g < all.length; g++) {
         var known = providers()[providerOf(all[g].item.id)];
         if (known && known.ok) { good++; break; }
       }
-      // Un ISRC identico è la prova migliore che si possa avere: inutile
-      // cercare ancora. Altrimenti si insiste solo se la fonte ha già servito
-      // audio (una ricerca in più costa mezzo secondo).
       if (all.length && (all[0].score >= 100 || (all[0].score >= 90 && good))) break;
     }
   }
 
   // Il relay cerca solo se il catalogo non ha dato niente (nessun token, 401):
   // con un id già in mano basta chiedergli il file.
-  if (!all.length && relayEnabled() && !nearDeadline(4000, 0.25) && queries.length) {
+  // 3. La ricerca degli addon. Prima si faceva solo se il catalogo non aveva
+  // dato niente; ma «avere un id» non vuol dire «poterlo suonare»: quando gli
+  // addon Qobuz tacciono, gli id Qobuz trovati qui non servono a nessuno e il
+  // brano resta senza voce. Meglio spendere un secondo e avere anche gli id che
+  // le fonti vive conoscono (oggi, per esempio, Deezer).
+  // La ricerca negli addon si fa solo se il catalogo non ha dato un id che una
+  // fonte viva sa suonare: con un account Qobuz buono gli id Qobuz bastano, e
+  // questa ricerca costava 1-5 s a ogni brano. Se poi il file non arriva, lo
+  // streamFor fa una seconda passata qui (più sotto, dopo il primo giro).
+  var needRelay = !all.length || !anyPlayable(all);
+  if (needRelay && relayEnabled() && !nearDeadline(4000, 0.25) && queries.length) {
     var relayed = relaySearchTracks(queries[0]);
     var fresh = [];
     for (var r = 0; r < relayed.length; r++) {
@@ -3048,10 +3203,12 @@ function findCandidates(track) {
     addRanked(fresh);
   }
 
-  // Internet Archive solo quando catalogo e relay non hanno dato nulla: se c'è
-  // già un abbinamento buono, la ricerca nell'archivio costerebbe un secondo per
-  // niente (lo streamFor lo prova comunque, come ultima spiaggia).
-  if (!all.length && !nearDeadline(5000, 0.3)) {
+  // Internet Archive quando catalogo e relay non hanno dato un abbinamento
+  // *suonabile*: se c'è già qualcosa che una fonte viva può servire, la ricerca
+  // nell'archivio costerebbe un secondo per niente. «Trovato» non basta: un id
+  // Qobuz con l'addon Qobuz spento è solo un numero, e senza questa ricerca il
+  // brano restava senza voce (era il caso dei classici).
+  if ((!all.length || !anyPlayable(all)) && !nearDeadline(5000, 0.3)) {
     var ia = iaCandidates(track);
     for (var w = 0; w < ia.length; w++) {
       if (seen[ia[w].id]) continue;
@@ -3243,14 +3400,64 @@ function orderIds(entry, wantHiResFirst, track, asDownload) {
   // Ordine dei tentativi: prima le fonti già viste funzionare, poi (se serve)
   // l'alta risoluzione, poi il punteggio di abbinamento.
   var known = providers();
-  function provRank(id) {
-    var k = known[String(id).split(':')[0]];
-    if (!k) return 1; // fonte mai provata
-    return k.ok ? 0 : 2;
+  // La fonte dell'id: `rl:` porta con sé la sua (meta.s), gli altri il prefisso.
+  function sourceAlive(one) {
+    if (String(one.i).indexOf('rl:') !== 0 || !one.s) return false;
+    var srcs = relaySources();
+    for (var si = 0; si < srcs.length; si++) {
+      if (srcs[si].key !== String(one.s)) continue;
+      var okAt = st2.ok && st2.ok[srcs[si].base] ? st2.ok[srcs[si].base] : 0;
+      return okAt > 0 && now() - okAt < 30 * 60000;
+    }
+    return false;
+  }
+  var st2 = relayState();
+  // C'è un addon Qobuz che non ha mai fallito di recente? Allora un id Qobuz è
+  // suonabile, e vale quanto un id di un addon che ha appena risposto.
+  // 0 = l'addon Qobuz ha risposto da poco (allora un id Qobuz vale la pena);
+  // 1 = mai provato (meglio prima uno suonabile, poi questo);
+  // 2 = ha fallito da poco (in fondo).
+  var qobuzRank = qobuzCanServe() ? 0 : 2;
+  var allSrc2 = relaySources();
+  for (var qs = 0; qs < allSrc2.length; qs++) {
+    if (allSrc2[qs].catalog !== 'qobuz') continue;
+    var qb = allSrc2[qs].base;
+    var qBad = st2.bad && st2.bad[qb] ? st2.bad[qb] : 0;
+    var qTtl = st2.badTtl && st2.badTtl[qb] ? st2.badTtl[qb] : 10 * 60000;
+    var qOk = st2.ok && st2.ok[qb] ? st2.ok[qb] : 0;
+    if (qOk && now() - qOk < 30 * 60000) qobuzRank = 0;
+    // (un account Qobuz buono vale come una fonte che ha appena risposto)
+    else if (!(qBad && now() - qBad < qTtl) && qobuzRank > 1) qobuzRank = 1;
+    if (qBad && now() - qBad < qTtl && qobuzRank > 0) qobuzRank = Math.max(qobuzRank, 2);
+  }
+  function srcByKey(k) {
+    var all = relaySources();
+    for (var si = 0; si < all.length; si++) if (all[si].key === k) return all[si];
+    return null;
+  }
+  function provRank(one) {
+    // Gli id degli addon si giudicano **per fonte**, non per «rl» in blocco:
+    // un id Deezer che non è andato non dice niente su un id Aurix.
+    if (String(one.i).indexOf('rl:') === 0) {
+      var src = srcByKey(String(one.s || ''));
+      if (!src) return 2;
+      if (relayRecentlyBad(src.base)) return 3;
+      if (sourceAlive(one)) return 0;
+      return 1;
+    }
+    var k = known[String(one.i).split(':')[0]];
+    if (String(one.i).indexOf('qz:') === 0) {
+      if (k && k.ok) return 0;
+      if (k && !k.ok) return 3;
+      return qobuzRank;
+    }
+    if (k && k.ok) return 0;
+    if (k && !k.ok) return 3;
+    return 1;
   }
   usable.sort(function (x, y) {
-    var rx = provRank(x.i);
-    var ry = provRank(y.i);
+    var rx = provRank(x);
+    var ry = provRank(y);
     if (rx !== ry) return rx - ry;
     if (wantHiResFirst && x.h !== y.h) return x.h ? -1 : 1;
     return (y.s || 0) - (x.s || 0);
@@ -3291,7 +3498,13 @@ function streamFor(track, wantHiRes, asDownload) {
     }
   }
 
+  var tSearch = now();
   var entry = findCandidates(track);
+  // Solo quando c'è stato lavoro vero: con l'abbinamento in cache la ricerca
+  // non costa niente e il log non deve dire nulla.
+  if (now() - tSearch > 50) {
+    myspoti.log('tempi: ricerca ' + (now() - tSearch) + ' ms, ' + leftMs() + ' ms rimasti');
+  }
   if (!entry) {
     myspoti.log('nessun abbinamento per "' + track.title + '" — ' + track.artist);
     return null;
@@ -3308,8 +3521,17 @@ function streamFor(track, wantHiRes, asDownload) {
     return null;
   }
   var changed = false;
+  // Un solo tentativo per catalogo in questa chiamata: se l'addon Qobuz non
+  // risponde, gli altri id Qobuz darebbero la stessa risposta e si mangerebbero
+  // il tempo del brano. Vale per Qobuz (che ha un solo addon) e per gli altri
+  // cataloghi che hanno una sola fonte viva.
+  var triedCatalog = {};
   for (var i = 0; i < ids.length && i < MAX_TRIES; i++) {
     if (i > 0 && leftMs() < 2500) break;
+    var catOfId = String(metaOf[String(ids[i])] && metaOf[String(ids[i])].s
+      ? 'src:' + metaOf[String(ids[i])].s : 'prov:' + providerOf(ids[i]));
+    if (i > 0 && triedCatalog[catOfId]) continue;
+    triedCatalog[catOfId] = true;
     var out = buildAnswer(ids[i], hiResFirst, metaOf[String(ids[i])], !!asDownload);
     if (out.ok) {
       var answer = out.answer;
@@ -3447,7 +3669,11 @@ function hasFeature(name) {
 }
 
 myspoti.provide('audio-source', function (track) {
-  startBudget(14);
+  // Sette secondi, non quattordici. Sul telefono l'app misura anche il tempo
+  // che ci mette ad aprire l'indirizzo che le diamo (~5 s): se la ricerca ne
+  // spende nove, il brano è perso anche quando il file c'era. Meglio rispondere
+  // con la prima fonte buona che cercare fino in fondo.
+  startBudget(8);
   if (!streamEnabled()) return null;
   try {
     var a = streamFor(track, preferHiRes());

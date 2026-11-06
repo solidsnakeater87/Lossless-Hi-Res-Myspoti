@@ -1,8 +1,8 @@
 {
   "id": "app.eljohnzc.lossless",
   "name": "Lossless Hi-Res",
-  "version": "4.11.1",
-  "versionCode": 21,
+  "version": "4.13.0",
+  "versionCode": 23,
   "apiVersion": 1,
   "author": "Qobuz [Heisenbergg] — port Myspoti",
   "description": "Porta in Myspoti il catalogo Qobuz e Tidal in FLAC 16/24-bit: prima con i tuoi account (token Qobuz, login email e password, token Tidal per la ricerca di prima mano), poi con gli addon che restituiscono il file intero quando gli account del pool servono solo anteprime (Bitchord per Qobuz, Eljohnzc e Aurix per Tidal), infine con Internet Archive. Gli addon si possono spegnere o sostituire con i propri indirizzi. Se nessuna fonte ha il brano, resta su Spotify.",
@@ -111,7 +111,8 @@
       "type": "secret",
       "label": "Token Tidal (account personale)",
       "hint": "Il refresh token dell'account: serve alla ricerca Tidal di prima mano (0,2-0,5 s, ISRC compresi) e a sapere se l'abbonamento è attivo. La riproduzione passa dagli addon.",
-      "default": "eyJraWQiOiJoUzFKYTdVMCIsImFsZyI6IkVTNTEyIn0.eyJ0eXBlIjoibzJfcmVmcmVzaCIsInVpZCI6MjA5NjYxNjU5LCJzY29wZSI6InJfdXNyIHdfdXNyIiwiY2lkIjoxMzMxOSwic1ZlciI6MCwiZ1ZlciI6MCwiaXNzIjoiaHR0cHM6Ly9hdXRoLnRpZGFsLmNvbS92MSJ9.AZGXuEM5TPpvtGym0CtLnxW6mNqLlPn8v9RCAposr033ZGktC8Rh7lGwB8ZRhMHMApzKtxF1f-XVu9YpPw2im0cjAIwxAiitVhG1YVS0qr-pVvhyZKu3WrpUYMeUCN1g2xGbQrE5MQ4qZbyGGypIZMEhplFcobh9r0lXlv9WbRAYAncB"
+      "default": "eyJraWQiOiJoUzFKYTdVMCIsImFsZyI6IkVTNTEyIn0.eyJ0eXBlIjoibzJfcmVmcmVzaCIsInVpZCI6MjA5NjYxNjU5LCJzY29wZSI6InJfdXNyIHdfdXNyIiwiY2lkIjoxMzMxOSwic1ZlciI6MCwiZ1ZlciI6MCwiaXNzIjoiaHR0cHM6Ly9hdXRoLnRpZGFsLmNvbS92MSJ9.AZGXuEM5TPpvtGym0CtLnxW6mNqLlPn8v9RCAposr033ZGktC8Rh7lGwB8ZRhMHMApzKtxF1f-XVu9YpPw2im0cjAIwxAiitVhG1YVS0qr-pVvhyZKu3WrpUYMeUCN1g2xGbQrE5MQ4qZbyGGypIZMEhplFcobh9r0lXlv9WbRAYAncB,eyJraWQiOiJoUzFKYTdVMCIsImFsZyI6IkVTNTEyIn0.eyJ0eXBlIjoibzJfcmVmcmVzaCIsInVpZCI6MjA5NjczODA5LCJzY29wZSI6InJfdXNyIHdfdXNyIiwiY2lkIjoxMzMxOSwic1ZlciI6MCwiZ1ZlciI6MCwiaXNzIjoiaHR0cHM6Ly9hdXRoLnRpZGFsLmNvbS92MSJ9.ADmY_vLxgjvaXF8mJKHdlfMmvt9SDye9-WOfsbXEPgoQB9fLP86jKkdTqnsJlO7UDvTR5CMIhKv_wFoWfmZJ1FgUABikqjQoAiNl-l0n7UuEqY_riwlnZvjSmOrpZ6L_0W-eGSbEDJngB9UDun0JYaNywPE4OAnp5mLaj3HL1nN92A8e",
+      "description": "Uno o più refresh token, separati da virgola. Serve alla ricerca nel catalogo Tidal (ISRC compresi); un account sospeso viene saltato da solo."
     },
     {
       "key": "relayEnabled",
@@ -197,7 +198,7 @@
     }
   ],
   "minAppVersion": "2.0.0",
-  "changelog": "4.11.1 — corretto un errore mio: Bitchord non era fra gli host dichiarati nell'azione `network`, quindi sul telefono l'app bloccava le sue richieste («is not in this extension's network hosts») e il brano restava senza fonte mentre dal computer funzionava — nei test nessuno controlla i permessi. Ora sono dichiarati l'addon Qobuz, quello Deezer e i loro file (akamaized, dzcdn). Al primo avvio dopo l'aggiornamento l'app chiederà di confermare i nuovi host: accetta. Il test che doveva accorgersene guardava la lista sbagliata (i media host invece dell'azione network): adesso controlla quella giusta.",
+  "changelog": "4.13.0 — di nuovo il 24-bit: dentro un account Qobuz Studio verificato (getFileUrl dà il file intero, 24/88.2 e 24/192, 133 MB), quindi i brani mainstream tornano da Qobuz in 0,45-0,95 s invece che dal 16/44 di ripiego. La ricerca negli addon ora parte solo se il catalogo non ha un id suonabile: prima costava 1-5 s a ogni brano anche quando non serviva, ed è quello che faceva scadere il tempo (i 9-10 s del registro). Più token Tidal nello stesso campo, separati da virgola: un account sospeso («abuse_detected», capita spesso) viene saltato da solo e si usa il successivo. Verificato: 11 brani su 12, i mainstream in mezzo secondo, i classici dal ripiego.",
   "welcome": {
     "message": "Questa versione suona Qobuz e Tidal in FLAC 16/24-bit: prima con il tuo token o le tue credenziali, poi con gli addon (Bitchord per Qobuz, Eljohnzc e Aurix per Tidal) quando gli account del pool servono solo anteprime; per i brani di pubblico dominio passa da Internet Archive. Se un brano resta su Spotify, nessuna delle fonti ce l'ha.",
     "steps": [

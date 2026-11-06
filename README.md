@@ -24,6 +24,81 @@ brano Spotify ──▶ abbinamento (titolo, artista, album, durata, ISRC)
    Myspoti: audio-source (riproduzione) · download-source (file .flac)
 ```
 
+## Cosa è cambiato nella 4.13.0
+
+**Il 24-bit è tornato.** Degli account arrivati il 6 novembre, uno su tre Qobuz funziona davvero, e
+basta: `getFileUrl` restituisce il **file intero** (24/88,2 — 133.376.529 byte — e fino a 24/192), non i
+30 secondi. È dentro l'estensione come account del pool.
+
+- **I brani mainstream tornano da Qobuz in 0,45-0,95 s**, in 24-bit (Get Lucky 24/88, Bohemian 24/96,
+  Take On Me 24/192, Blu celeste 24/96…). Il 16/44 dell'addon Deezer resta per i brani che Qobuz non ha.
+- **La ricerca negli addon parte solo se serve.** Prima si cercava sempre anche negli addon, e quella
+  ricerca costava 1-5 s a ogni brano anche quando gli id Qobuz bastavano: era lei a mangiare il tempo
+  (i 9-10 s del registro, con il brano perso per un soffio). Ora, se il catalogo ha già un id che una
+  fonte viva sa suonare, si va dritti al file; la ricerca negli addon resta come seconda passata,
+  quando il primo giro non ha prodotto niente.
+- **Più token Tidal nello stesso campo**, separati da virgola. Tidal sospende parecchi account
+  (`abuse_detected`): quelli vengono saltati da soli e si usa il successivo, senza toccare niente.
+- Il tetto per brano resta 8 s: con un account buono non serve più arrivarci.
+
+Misurato sui dodici brani di prova: **11 su 12**, mainstream in **0,45-0,95 s**, i due classici dal
+ripiego (Deezer 16/44) in 3,4-3,8 s.
+
+### Sugli account arrivati il 6 novembre
+
+| Account | Esito |
+|---|---|
+| Qobuz NZ `15710135` | **funziona**: file intero 24/88,2 (il credential dice uid 4801845) |
+| Qobuz NZ `15695365` | `user/get` → 401 |
+| Qobuz GB `15226142` | `user/get` → 401 |
+| Tidal FR `209673809` | **funziona**: rinnova, Premium fino al 2027-01-04, ricerca con ISRC |
+| Tidal GB `209674012` | sospeso (`abuse_detected`) |
+| Tidal CA `209674302` | sospeso |
+| Tidal NL `209674730` | sospeso |
+| Tidal NZ `209673940` | sospeso |
+
+Il vecchio token Tidal (HR) rinnova ancora: nella casella dei token Tidal ce ne sono due, e si passa
+al secondo da solo se il primo smette.
+
+## Cosa è cambiato nella 4.12.0
+
+Le fonti su cui l'estensione si appoggiava si sono spente tutte, nello stesso giorno:
+
+| Fonte | Stato il 6 novembre |
+|---|---|
+| Addon Qobuz (Bitchord) | `404 not available in this addon` su **ogni** id |
+| Aurix (Tidal) | `302` verso una pagina Google: la chiave pubblica è scaduta |
+| Eljohnzc (Tidal) | `503` su ogni percorso |
+| **Deezer (rickyaddons)** | **vivo**: ricerca ~0,6 s, FLAC 16/44 vero |
+| Archivio Internet | vivo, per i brani che ha |
+
+Quindi il problema del telefono non erano i permessi (quelli sono a posto dalla 4.11.1) né il telefono:
+erano gli addon. Quello che ho cambiato:
+
+- **Si cerca anche negli addon, sempre.** Prima la ricerca degli addon partiva solo se il catalogo
+  Qobuz non aveva dato niente. Ma «avere un id» non vuol dire «poterlo suonare»: un id Qobuz con
+  l'addon Qobuz spento è solo un numero, e il brano restava senza voce. Ora si cercano entrambi e si
+  sceglie l'id che una fonte **viva** sa servire.
+- **Un tentativo per catalogo, a brano.** Se l'addon Qobuz non risponde, gli altri dieci id Qobuz
+  darebbero la stessa risposta: si passa avanti.
+- **Tetto a 8 s** (era 14) e ricerche più corte: sul telefono i secondi sono contati, e la misura del
+  registro («took longer than 5000 ms») diceva che l'app ne spendeva nove prima di arrendersi.
+- **Due colpi e la fonte va in fondo** per mezzo minuto (prima serviva un rifiuto *immediato*, quindi
+  un addon che si impuntava 4 s veniva richiamato a ogni brano).
+- **Registro più utile**: `tempi: ricerca 620 ms, 7380 ms rimasti`, e per ogni fonte che tace
+  `relay qz …: bitchord non ha risposto in 3002 ms`.
+
+Misurato sui dodici brani di prova, con gli addon di oggi: **11 su 12**, da **0,7 a 3,2 s** (tutti da
+Deezer 16/44). `Homemade` degli Eugenio in Via Di Gioia non è in nessun catalogo raggiungibile.
+
+### Sul servizio `losslessbridge`
+
+Il link indicato non è un addon pronto: la radice e `/manifest.json` rispondono
+`{"error":"not found","enroll":"…"}`, cioè serve un'iscrizione che genera un link personale. Il suo
+`/health` dice anche com'è messo: `qobuz` e `hifi` **disattivati**, `monochrome`/`gdstudio`/`archive`
+degradati, l'unica fonte accesa è **Netease**. Non l'ho aggiunto: non c'è niente da aggiungere finché
+non c'è il link personale, e anche con quello non darebbe Qobuz né Tidal.
+
 ## Cosa è cambiato nella 4.11.1
 
 - **Bitchord non era fra gli host dichiarati.** L'azione `network` del manifest elencava Aurix, Eljohnzc,
@@ -321,7 +396,7 @@ l'estensione quando una sonda non conclude, pulsante **Prova le fonti**, tetto a
 
 Serve Myspoti **2.0.0 o successiva** (per Aurix, una versione che dichiari `audio.manifest`).
 
-**1. Dal file.** Scarica [`extension.zip`](extension.zip) (o `app.eljohnzc.lossless-4.11.1.zip`, è lo
+**1. Dal file.** Scarica [`extension.zip`](extension.zip) (o `app.eljohnzc.lossless-4.13.0.zip`, è lo
 stesso file), copialo sul telefono e installalo da *Impostazioni ▸ Estensioni ▸ Installa da un file*.
 Sopra la 4.5.0 Myspoti mostra **"Update needs your OK"** con le differenze (stesso `id`): si accetta
 una volta e le impostazioni restano.
@@ -330,7 +405,7 @@ una volta e le impostazioni restano.
 in *Installa da un indirizzo*.
 
 **3. Dal negozio.** Pubblica questo repository su GitHub con il topic **`myspoti-extension`** e una
-release con `extension.zip` allegato (`git tag v4.11.1 && git push origin v4.11.1`; il workflow in
+release con `extension.zip` allegato (`git tag v4.13.0 && git push origin v4.13.0`; il workflow in
 `.github/workflows/release.yml` controlla, compila e allega il pacchetto).
 
 Poi: **Impostazioni ▸ Estensioni ▸ Lossless Hi-Res** e una playlist in play. Nel player, sotto il
