@@ -24,6 +24,29 @@ brano Spotify ──▶ abbinamento (titolo, artista, album, durata, ISRC)
    Myspoti: audio-source (riproduzione) · download-source (file .flac)
 ```
 
+## Aggiornamento 4.13.3
+
+Aggiunto un account Qobuz Studio al pool interno, verificando file FLAC interi
+24-bit/88,2 kHz e 16-bit/44,1 kHz. Nessuna nuova fonte o modifica alle impostazioni.
+
+## Pulizia 4.13.2
+
+Rimossi i tre vecchi token Qobuz solo-anteprima e i relay Aurix, Eljohnzc e
+Bitchord non funzionanti, insieme ai permessi per i loro host. Conservati il
+Qobuz funzionante, i due token Tidal, Deezer e Internet Archive. Nessuna fonte
+nuova. Le impostazioni personali salvate sul telefono non vengono cancellate.
+Le sezioni precedenti qui sotto descrivono versioni storiche, non le fonti attive.
+
+## Cosa è cambiato nella 4.13.1
+
+**Solo documentazione, niente codice**: la 4.13.0 resta identica, quindi se ce l'hai già installata non
+c'è niente da fare. Sotto «Sugli account arrivati il 6 novembre» c'è ora la verifica sulle fonti di
+FLACidal, riassunta così: **nessuna si può importare**. Il pool Tidal/Qobuz/Amazon sta in un modulo
+privato ed è dichiarato «mostly down» dal sito stesso; delle 12 istanze Hi-Fi pubbliche provate 11 non
+rispondono e l'unica viva dà 403 su `/track/`. Bandcamp è un altro catalogo, Soulseek è P2P con
+accodamento, e Odesli (`api.song.link`) ora risponde 401. Nessuna fonte nuova, nessuna impostazione
+nuova.
+
 ## Cosa è cambiato nella 4.13.0
 
 **Il 24-bit è tornato.** Degli account arrivati il 6 novembre, uno su tre Qobuz funziona davvero, e
@@ -59,6 +82,32 @@ ripiego (Deezer 16/44) in 3,4-3,8 s.
 
 Il vecchio token Tidal (HR) rinnova ancora: nella casella dei token Tidal ce ne sono due, e si passa
 al secondo da solo se il primo smette.
+
+### Sulle fonti di FLACidal
+
+Domanda del 6 novembre: se ne può ricavare qualcosa. Ho guardato il repository e anche l'eseguibile
+Linux della 4.18.2 — dentro le stringhe del binario ci sono gli indirizzi che il repo non mostra
+(il modulo `flacidal-core` è privato, ma nel binario finisce la lista compilata). Esito: **niente da
+importare**, per motivi diversi da fonte a fonte.
+
+| Fonte in FLACidal | Com'è fatta | Verificato il 6 nov | Importabile? |
+|---|---|---|---|
+| Tidal / Qobuz / Amazon | API Hi-Fi personali in un *pool comunitario*, indirizzi nel modulo privato `flacidal-core` | il sito lo dichiara «mostly down». Delle 12 istanze Hi-Fi pubbliche provate, 11 non rispondono affatto (DNS o TLS); l'unica raggiungibile (`monochrome-api.samidy.com`) dà 200 alla ricerca ma **403 `Upstream API error`** su `/track/` per qualunque id | **no** |
+| Bandcamp | `bandcamp.com` in diretta, solo il catalogo Bandcamp | — | no: altro catalogo, non copre quello che serve |
+| Soulseek | P2P, con accodamento e client proprio | — | no: non entra né in una richiesta HTTP né negli 8 s |
+| «Universel» | API pubblica Deezer | già in uso | già fatto (è il ripiego dell'estensione) |
+| link Spotify → altri | Odesli `api.song.link` | **401 `PUBLIC_API_ACCESS_DEPRECATED`** | no |
+
+Per Qobuz le alternative pubbliche citate nel binario stanno messe peggio: `qobuz.squid.wtf` e
+`music.wjhe.top` hanno il DNS morto, `dabmusic.xyz` risponde con la challenge di Cloudflare.
+
+In pratica: le fonti di FLACidal che funzionano davvero sono le stesse due che usa già l'estensione —
+i token che arrivano da te e il catalogo pubblico Deezer. Il resto è privato, spento o fuori
+portata.
+
+L'unica cosa che cambierebbe qualcosa è **un endpoint tuo**: se un giorno monti un `hifi-api` (Tidal)
+o un proxy Qobuz su un dominio tuo, passa l'URL e si aggiunge come fonte «relay» (con l'host
+dichiarato nel manifest, come le altre).
 
 ## Cosa è cambiato nella 4.12.0
 
@@ -396,7 +445,7 @@ l'estensione quando una sonda non conclude, pulsante **Prova le fonti**, tetto a
 
 Serve Myspoti **2.0.0 o successiva** (per Aurix, una versione che dichiari `audio.manifest`).
 
-**1. Dal file.** Scarica [`extension.zip`](extension.zip) (o `app.eljohnzc.lossless-4.13.0.zip`, è lo
+**1. Dal file.** Scarica [`extension.zip`](extension.zip) (o `app.eljohnzc.lossless-4.13.1.zip`, è lo
 stesso file), copialo sul telefono e installalo da *Impostazioni ▸ Estensioni ▸ Installa da un file*.
 Sopra la 4.5.0 Myspoti mostra **"Update needs your OK"** con le differenze (stesso `id`): si accetta
 una volta e le impostazioni restano.
@@ -405,7 +454,7 @@ una volta e le impostazioni restano.
 in *Installa da un indirizzo*.
 
 **3. Dal negozio.** Pubblica questo repository su GitHub con il topic **`myspoti-extension`** e una
-release con `extension.zip` allegato (`git tag v4.13.0 && git push origin v4.13.0`; il workflow in
+release con `extension.zip` allegato (`git tag v4.13.1 && git push origin v4.13.1`; il workflow in
 `.github/workflows/release.yml` controlla, compila e allega il pacchetto).
 
 Poi: **Impostazioni ▸ Estensioni ▸ Lossless Hi-Res** e una playlist in play. Nel player, sotto il

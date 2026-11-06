@@ -1,11 +1,11 @@
 {
   "id": "app.eljohnzc.lossless",
   "name": "Lossless Hi-Res",
-  "version": "4.13.0",
-  "versionCode": 23,
+  "version": "4.13.3",
+  "versionCode": 26,
   "apiVersion": 1,
   "author": "Qobuz [Heisenbergg] — port Myspoti",
-  "description": "Porta in Myspoti il catalogo Qobuz e Tidal in FLAC 16/24-bit: prima con i tuoi account (token Qobuz, login email e password, token Tidal per la ricerca di prima mano), poi con gli addon che restituiscono il file intero quando gli account del pool servono solo anteprime (Bitchord per Qobuz, Eljohnzc e Aurix per Tidal), infine con Internet Archive. Gli addon si possono spegnere o sostituire con i propri indirizzi. Se nessuna fonte ha il brano, resta su Spotify.",
+  "description": "Riproduzione e download FLAC con Qobuz, ripiego Deezer e Internet Archive. Tidal resta disponibile per la ricerca e gli ISRC. Supporta account personali e indirizzi relay configurabili.",
   "category": "tools",
   "tags": [
     "qobuz",
@@ -17,11 +17,8 @@
   ],
   "media": {
     "hosts": [
-      "addon-2.aurix.dpdns.org",
       "archive.org",
-      "bitchord-hires-addon.de.deplexo.com",
       "deezer.rickyaddons.dpdns.org",
-      "eljohnzc-addon.de.deplexo.com",
       "*.akamaized.net",
       "*.archive.org",
       "*.audio.tidal.com",
@@ -42,11 +39,8 @@
     {
       "name": "network",
       "hosts": [
-        "addon-2.aurix.dpdns.org",
         "archive.org",
-        "bitchord-hires-addon.de.deplexo.com",
         "deezer.rickyaddons.dpdns.org",
-        "eljohnzc-addon.de.deplexo.com",
         "www.qobuz.com",
         "*.akamaized.net",
         "*.archive.org",
@@ -198,7 +192,7 @@
     }
   ],
   "minAppVersion": "2.0.0",
-  "changelog": "4.13.0 — di nuovo il 24-bit: dentro un account Qobuz Studio verificato (getFileUrl dà il file intero, 24/88.2 e 24/192, 133 MB), quindi i brani mainstream tornano da Qobuz in 0,45-0,95 s invece che dal 16/44 di ripiego. La ricerca negli addon ora parte solo se il catalogo non ha un id suonabile: prima costava 1-5 s a ogni brano anche quando non serviva, ed è quello che faceva scadere il tempo (i 9-10 s del registro). Più token Tidal nello stesso campo, separati da virgola: un account sospeso («abuse_detected», capita spesso) viene saltato da solo e si usa il successivo. Verificato: 11 brani su 12, i mainstream in mezzo secondo, i classici dal ripiego.",
+  "changelog": "4.13.3 — Aggiunto al pool un account Qobuz Studio verificato: FLAC interi 24-bit/88,2 kHz e 16-bit/44,1 kHz, con verifica Range e firma FLAC. Conservati gli account esistenti e le impostazioni.",
   "welcome": {
     "message": "Questa versione suona Qobuz e Tidal in FLAC 16/24-bit: prima con il tuo token o le tue credenziali, poi con gli addon (Bitchord per Qobuz, Eljohnzc e Aurix per Tidal) quando gli account del pool servono solo anteprime; per i brani di pubblico dominio passa da Internet Archive. Se un brano resta su Spotify, nessuna delle fonti ce l'ha.",
     "steps": [

@@ -1,5 +1,5 @@
 /*
- * Lossless Hi-Res — estensione per Myspoti (API 1), versione 4.13.0.
+ * Lossless Hi-Res — estensione per Myspoti (API 1), versione 4.13.3.
  * Stesso id dal 4.0.0: si installa sopra la versione precedente.
  * ---------------------------------------------------------------------------
  * Le fonti, nell'ordine in cui si provano:
@@ -232,11 +232,7 @@ var POOL_TIMEOUT = 3500;
  * funzionare da un giorno all'altro, per questo si ruota e si accetta anche
  * un token personale dalle impostazioni.
  */
-var SHARED_TOKENS = [
-  { token: 'LXcX98uaBz8NPoRZsigyB6TfCemNotzeG7oVwy5XZHPKXNeLMXJUPyEGAM6c5qUpBWnkqmRaRUbJGup9oSsh_w', appId: '312369995', appSecret: 'e79f8b9be485692b0e5f9dd895826368' },
-  { token: '7W1P_bimeouwcLTVKjV1UGr_MJp4psetcljd1awOU9QksKi9AmHKvf6MtIdvzP0HuLLENvmM2pJErjSuE_3N3g', appId: '312369995', appSecret: 'e79f8b9be485692b0e5f9dd895826368' },
-  { token: 'O97vZDyvXmYhLPfbn07D8Y4SFN02DyRrYb3Pe3rQXWnw1HosDl9vfQTGRQEo2zkkcwP9ADc3L20nYNaI0l7E4g', appId: '312369995', appSecret: 'e79f8b9be485692b0e5f9dd895826368' }
-];
+var SHARED_TOKENS = []; // Rimossi i tre token pubblici solo-anteprima.
 /*
  * Token di account veri, scritti qui dentro su richiesta dell'utente: hanno
  * un abbonamento (Studio / Premium) e quindi restituiscono il file intero, non
@@ -244,6 +240,8 @@ var SHARED_TOKENS = [
  * sbagliata Qobuz risponde «Invalid Request Signature».
  */
 var ACCOUNT_TOKENS = [
+  { token: 'MoHalkkr3EyP7-DE-767c8lOnHoo2axDqneBL6Mwf43agcx6IYjS0vIwhCKrSnDQUqmxreO1i7H4ppCnkQTUPg',
+    appId: '798273057', appSecret: 'abb21364945c0583309667d13ca3d93a', label: 'Qobuz Studio' },
   // Verificato il 6 novembre: getFileUrl dà il file intero in 24/88.2 (133 MB),
   // non i 30 secondi. Il vecchio account US risponde 401 da ieri e non è più qui.
   { token: 'U1gsOTxEQZmxO-6jTxkysinHkaFNNld3eJC9WRA0cmvw1HosDl9vfQTGRQEo2zkkcwP9ADc3L20nYNaI0l7E4g',
@@ -946,38 +944,9 @@ function relayEnabled() {
  * solo quelli che rispondono davvero.
  */
 var RELAY_SOURCES = [
-  // Aurix: addon che serve il catalogo Tidal in FLAC, anche 24-bit, sotto forma
-  // di DASH (un MPD con i segmenti già firmati). È la fonte più completa.
-  // Eljohnzc: l'altro addon Tidal (id nudi, qualità "hires"/"lossless"), il
-  // progenitore di questa estensione. Stesso catalogo di Aurix, quindi un id
-  // "tidal:…" vale per tutti e due: se uno tace si prova l'altro. Va per primo
-  // perché di solito risponde in meno di un secondo, ma a freddo può incagliarsi:
-  // il tetto di 4 s lo taglia fuori e il brano passa ad Aurix.
-  { key: 'aurix', base: 'https://addon-2.aurix.dpdns.org/free_rLnRPnC6oZF5gvAx', shape: 'dash',
-    catalog: 'tidal' },
-  // Eljohnzc: l'altro addon Tidal (id nudi, qualità "hires"/"lossless"), il
-  // progenitore di questa estensione. Stesso catalogo di Aurix, quindi un id
-  // "tidal:…" vale per tutti e due. Ora va **dopo** Aurix: da giorni risponde
-  // 503 a ogni percorso, e provarlo per primo costava due-tre secondi a ogni
-  // brano che solo Aurix sa servire (i classici arrivavano a filo del tempo).
-  { key: 'eljohnzc', base: 'https://eljohnzc-addon.de.deplexo.com/59efe06a96', shape: 'dash',
-    q: ['hires', 'lossless'], plain: true, cap: 4000, catalog: 'tidal' },
-  // Bitchord: addon col **catalogo Qobuz** e un account che paga davvero.
-  // Risponde /stream/<id Qobuz> con l'URL di un FLAC intero (fmt 7, 24-bit):
-  // è la strada che prima mancava, perché i nostri token servono solo 30 s.
-  // La sua ricerca costa ~11 s, quindi non si usa: gli id Qobuz li conosce già
-  // la nostra ricerca, e qui si chiede solo il file di un id che si ha in mano.
-  { key: 'bitchord', base: 'https://bitchord-hires-addon.de.deplexo.com', shape: 'bitchord',
-    q: ['lossless', 'high'], cap: 3000, catalog: 'qobuz', noSearch: true },
-  // Deezer (rickyaddons), forma «stream» come gli addon di BitChord: parla il
-  // catalogo Deezer e, con un account HiFi, serve FLAC 16/44 veri (provato: un
-  // .flac da 43 MB per un brano da 6 minuti). Gli id sono numeri secchi, quindi
-  // non vanno mai dati agli addon Qobuz/Tidal — e viceversa.
+  // Unica fonte relay mantenuta: file FLAC interi verificati.
   { key: 'deezer', base: 'https://deezer.rickyaddons.dpdns.org/u/2184f06e057c01b3e8a06eb5a3d1',
-    shape: 'stream', catalog: 'deezer', cap: 4000 },
-  // Punto. arcod.xyz e instable.arcod.xyz sono uscite nella 4.8.0: la prima
-  // risponde 400 dopo undici secondi, la seconda non risponde affatto — erano
-  // solo un timeout in più a ogni brano.
+    shape: 'stream', catalog: 'deezer', cap: 4000 }
 ];
 
 /**
@@ -2780,7 +2749,7 @@ function refreshPool(force) {
         var appId = one.app_id || one.appId || QOBUZ_APP.appId;
         var secret = one.app_secret || one.appSecret;
         if (!secret) {
-          secret = String(appId) === '312369995' ? SHARED_TOKENS[0].appSecret : QOBUZ_APP.appSecret;
+          secret = String(appId) === '312369995' ? QOBUZ_TOKEN_APP.appSecret : QOBUZ_APP.appSecret;
         }
         list.push({ token: String(token), appId: String(appId), appSecret: String(secret) });
       }
